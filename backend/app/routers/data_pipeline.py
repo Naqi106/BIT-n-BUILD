@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from backend.app.db import get_db
 from backend.data.db_schema import Zone, RawReading, BillingRecord
+from backend.app.engines.ml_billing_anomaly import FALLBACK_RATIO
 
 router = APIRouter(prefix="/data", tags=["Data Pipeline"])
 
@@ -185,7 +186,7 @@ async def upload_csv(
                 # Basic anomaly score: how far below benchmark (0 = normal, 1 = max suspicious)
                 ratio = billed / benchmark if benchmark > 0 else 1.0
                 anomaly_score = round(max(0.0, 1.0 - ratio), 4)
-                is_anomaly = ratio < 0.60  # flagged if billed < 60% of benchmark
+                is_anomaly = ratio < FALLBACK_RATIO  # documented no-ML threshold
 
                 db.add(BillingRecord(
                     zone_id=zone_id,

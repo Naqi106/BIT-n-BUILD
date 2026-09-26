@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.app.db import SessionLocal, engine
+from backend.app.engines.ml_billing_anomaly import FALLBACK_RATIO
 from backend.data.db_schema import (
     init_db, Zone, RawReading, BillingRecord,
     NRWSnapshot, InvestigationMemory
@@ -178,7 +179,7 @@ def seed(clear_existing=False):
                             billed_litres=billed,
                             benchmark_litres=benchmark,
                             anomaly_score=anomaly_score,
-                            is_anomaly=(ratio < 0.60),
+                            is_anomaly=(ratio < FALLBACK_RATIO),
                             billing_period=f"2026-{7+month_offset:02d}",
                         ))
                         total += 1

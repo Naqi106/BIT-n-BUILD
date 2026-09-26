@@ -6,7 +6,11 @@ import pandas as pd
 from backend.app.db import get_db
 from backend.data.db_schema import BillingRecord, Zone
 from backend.app.models import PaginatedBillingAudit, BillingAuditItem, PPAAuditItem
-from backend.app.engines.ml_billing_anomaly import get_detector, is_anomaly as ml_is_anomaly
+from backend.app.engines.ml_billing_anomaly import (
+    FLAG_THRESHOLD,
+    get_detector,
+    is_anomaly as ml_is_anomaly,
+)
 
 router = APIRouter(prefix="/audit", tags=["Audits"])
 
@@ -53,7 +57,7 @@ def get_billing_audit(
         reverse=True
     )
 
-    total_anomalies = sum(1 for _, s in scored if s >= 0.5)
+    total_anomalies = sum(1 for _, s in scored if s >= FLAG_THRESHOLD)
 
     # Paginate
     page = scored[offset: offset + limit]
@@ -72,7 +76,7 @@ def get_billing_audit(
             billed_litres=rec.billed_litres,
             benchmark_litres=rec.benchmark_litres,
             suspicion_score=round(float(score), 3),
-            is_anomaly=(float(score) >= 0.5),
+            is_anomaly=(float(score) >= FLAG_THRESHOLD),
         ))
 
     return PaginatedBillingAudit(

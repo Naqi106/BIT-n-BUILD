@@ -38,27 +38,38 @@ def isolate_detector_state():
 
 @pytest.fixture()
 def seeded_df() -> pd.DataFrame:
-    """Reproduces the seeded billing distribution from lucknow_seed.py."""
+    """
+    Faithful reproduction of lucknow_seed.py's billing generation rule, at the
+    same composition as the live DB (399 records: 9 theft households x 3 months
+    = 27 theft rows, 124 normal households x 3 months = 372 normal rows).
+
+        theft  : 3 households in zone_2/4/6, billed 35-65% of benchmark
+        normal : billed 92-108% of benchmark
+        monthly: billed_base x uniform(0.95, 1.05)
+        benchmark = household_size x 135 L/day x 30 days, size random 3-7
+    """
     rng = random.Random(42)
     rows = []
 
-    # 12 theft households — 3 per theft zone, as the seed writes them
-    for _ in range(12):
-        rows.append({
-            "billed_litres": round(BENCHMARK * rng.uniform(0.35, 0.65)),
-            "benchmark_litres": BENCHMARK,
-            "household_size": 4,
-            "_label": "theft",
-        })
+    def add_household(is_theft: bool) -> None:
+        hh_size = rng.randint(3, 7)
+        benchmark = hh_size * 135 * 30
+        billed_base = round(
+            benchmark * (rng.uniform(0.35, 0.65) if is_theft else rng.uniform(0.92, 1.08))
+        )
+        label = "theft" if is_theft else "normal"
+        for _ in range(3):  # three monthly billing periods
+            rows.append({
+                "billed_litres": round(billed_base * rng.uniform(0.95, 1.05)),
+                "benchmark_litres": benchmark,
+                "household_size": hh_size,
+                "_label": label,
+            })
 
-    # 60 normal households
-    for _ in range(60):
-        rows.append({
-            "billed_litres": round(BENCHMARK * rng.uniform(0.92, 1.08)),
-            "benchmark_litres": BENCHMARK,
-            "household_size": 4,
-            "_label": "normal",
-        })
+    for _ in range(9):    # 3 theft households in each of zone_2 / zone_4 / zone_6
+        add_household(is_theft=True)
+    for _ in range(124):  # every other household in the 12 seeded zones
+        add_household(is_theft=False)
 
     return pd.DataFrame(rows)
 
@@ -68,28 +79,29 @@ def seeded_df() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def test_detector_trains(seeded_df):
-    det = mba.BillingAnomalyDetector(contamination=0.15, random_state=42).fit(seeded_df)
+    det = mba.BillingAnomalyDetector(contamination=mba.CONTAMINATION, random_state=42).fit(seeded_df)
     assert det.is_trained
     assert det.model is not None
 
 
 def test_seeded_theft_households_are_flagged(seeded_df):
     """Core requirement: the 12 known theft households must be caught."""
-    det = mba.BillingAnomalyDetector(contamination=0.15, random_state=42).fit(seeded_df)
+    det = mba.BillingAnomalyDetector(contamination=mba.CONTAMINATION, random_state=42).fit(seeded_df)
     scores = det.predict_anomaly(seeded_df)
 
     theft_mask = seeded_df["_label"].eq("theft").values
-    theft_flagged = int((scores[theft_mask] >= 0.5).sum())
+    theft_flagged = int((scores[theft_mask] >= mba.FLAG_THRESHOLD).sum())
+    n_theft = int(theft_mask.sum())
 
     # Allow one miss — Isolation Forest is unsupervised, not a guarantee
-    assert theft_flagged >= 11, (
-        f"Only {theft_flagged}/12 known theft households flagged"
+    assert theft_flagged >= n_theft - 1, (
+        f"Only {theft_flagged}/{n_theft} known theft households flagged"
     )
 
 
 def test_theft_scores_rank_above_normal(seeded_df):
     """Average score for theft households must exceed average for normal ones."""
-    det = mba.BillingAnomalyDetector(contamination=0.15, random_state=42).fit(seeded_df)
+    det = mba.BillingAnomalyDetector(contamination=mba.CONTAMINATION, random_state=42).fit(seeded_df)
     scores = det.predict_anomaly(seeded_df)
 
     theft_mask = seeded_df["_label"].eq("theft").values
@@ -103,17 +115,17 @@ def test_theft_scores_rank_above_normal(seeded_df):
 
 def test_false_positive_rate_is_reasonable(seeded_df):
     """Rule-based predecessor used a hard 40% cut; ML must not flag everything."""
-    det = mba.BillingAnomalyDetector(contamination=0.15, random_state=42).fit(seeded_df)
+    det = mba.BillingAnomalyDetector(contamination=mba.CONTAMINATION, random_state=42).fit(seeded_df)
     scores = det.predict_anomaly(seeded_df)
 
     normal_mask = seeded_df["_label"].eq("normal").values
-    fp_rate = float((scores[normal_mask] >= 0.5).mean())
+    fp_rate = float((scores[normal_mask] >= mba.FLAG_THRESHOLD).mean())
 
-    assert fp_rate <= 0.15, f"False-positive rate {fp_rate:.0%} too high"
+    assert fp_rate <= 0.05, f"False-positive rate {fp_rate:.0%} too high"
 
 
 def test_extreme_cases_score_in_expected_direction(seeded_df):
-    det = mba.BillingAnomalyDetector(contamination=0.15, random_state=42).fit(seeded_df)
+    det = mba.BillingAnomalyDetector(contamination=mba.CONTAMINATION, random_state=42).fit(seeded_df)
 
     severe_theft = det.score_household(billed=BENCHMARK * 0.35, benchmark=BENCHMARK)
     honest = det.score_household(billed=BENCHMARK, benchmark=BENCHMARK)
@@ -126,7 +138,7 @@ def test_extreme_cases_score_in_expected_direction(seeded_df):
 
 
 def test_scores_are_normalised_to_unit_interval(seeded_df):
-    det = mba.BillingAnomalyDetector(contamination=0.15, random_state=42).fit(seeded_df)
+    det = mba.BillingAnomalyDetector(contamination=mba.CONTAMINATION, random_state=42).fit(seeded_df)
     scores = det.predict_anomaly(seeded_df)
     assert scores.min() >= 0.0
     assert scores.max() <= 1.0
@@ -259,5 +271,138 @@ def test_live_theft_zones_outrank_clean_zone():
         f"Theft zones mean {theft_mean:.3f} not above {CLEAN_ZONE} {clean_mean:.3f}"
     )
 
-    total_flagged = int((df["score"] >= 0.5).sum())
+    total_flagged = int((df["score"] >= mba.FLAG_THRESHOLD).sum())
     assert total_flagged > 0, "model flagged nothing across the whole seeded dataset"
+
+
+# ---------------------------------------------------------------------------
+# 5. Hours 10-15 threshold tuning — pinned so a constant change fails loudly
+# ---------------------------------------------------------------------------
+
+def test_tuned_thresholds_hold_on_seeded_data():
+    """
+    Reproduces backend/test/tune_thresholds.py's headline result:
+    at CONTAMINATION=0.08 / FLAG_THRESHOLD=0.50 the detector must catch every
+    ground-truth theft household (ratio < 0.70) while keeping precision >= 0.80,
+    i.e. the numbers the AI Copilot cites to a judge stay defensible.
+    """
+    df = _load_seeded_billing()
+
+    y_true = (df["billed_litres"] / df["benchmark_litres"] < 0.70).values
+
+    det = mba.BillingAnomalyDetector(
+        contamination=mba.CONTAMINATION, random_state=42
+    ).fit(df)
+    y_pred = det.predict_anomaly(df) >= mba.FLAG_THRESHOLD
+
+    tp = int((y_true & y_pred).sum())
+    fp = int((~y_true & y_pred).sum())
+    fn = int((y_true & ~y_pred).sum())
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+
+    assert recall >= 0.99, f"missed {fn} seeded theft households (recall {recall:.2f})"
+    assert precision >= 0.80, f"precision {precision:.2f} below tuned 0.80 floor"
+    assert y_pred.sum() <= len(df) * 0.12, (
+        f"{int(y_pred.sum())}/{len(df)} flagged — tuned cut should stay near 8%"
+    )
+
+
+def test_scores_reproduce_across_independent_resample():
+    """
+    The calibration must not depend on which rows happen to land in the
+    training sample: an independent re-sample drawn from the same generation
+    rule has to yield the same precision/recall. This is the regression test
+    for the min-max normalisation that was replaced (recall 1.00 -> 0.59).
+    """
+    rng = random.Random(7)
+    rows = []
+
+    def add_household(is_theft: bool) -> None:
+        hh_size = rng.randint(3, 7)
+        benchmark = hh_size * 135 * 30
+        billed_base = round(
+            benchmark * (rng.uniform(0.35, 0.65) if is_theft else rng.uniform(0.92, 1.08))
+        )
+        for _ in range(3):
+            rows.append({
+                "billed_litres": round(billed_base * rng.uniform(0.95, 1.05)),
+                "benchmark_litres": benchmark,
+                "household_size": hh_size,
+                "_theft": is_theft,
+            })
+
+    for _ in range(9):
+        add_household(True)
+    for _ in range(124):
+        add_household(False)
+
+    df = pd.DataFrame(rows)
+    y_true = df["_theft"].values
+
+    det = mba.BillingAnomalyDetector(
+        contamination=mba.CONTAMINATION, random_state=42
+    ).fit(df)
+    y_pred = det.predict_anomaly(df) >= mba.FLAG_THRESHOLD
+
+    tp = int((y_true & y_pred).sum())
+    fn = int((y_true & ~y_pred).sum())
+    fp = int((~y_true & y_pred).sum())
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+
+    assert recall >= 0.99, f"resample recall {recall:.2f} diverged from live recall 1.00"
+    assert precision >= 0.80, f"resample precision {precision:.2f} below tuned floor"
+
+
+def test_tuned_constants_are_documented_and_sane():
+    """Guards the sweep table in ml_billing_anomaly.py against silent edits."""
+    assert mba.MODERATE_THRESHOLD < mba.FLAG_THRESHOLD < 1.0
+    assert 0 < mba.FALLBACK_RATIO < 1
+    assert 0 < mba.CONTAMINATION < 1
+
+
+def test_explanation_bands_align_with_flag_threshold():
+    """
+    'Strong anomaly' text must agree with the actual flag decision, and the
+    severity text must never increase as the score falls.
+    """
+    mba.train_detector(
+        pd.DataFrame([
+            {"billed_litres": b, "benchmark_litres": BENCHMARK, "household_size": 4}
+            for b in [
+                *[round(BENCHMARK * r) for r in (0.35, 0.40, 0.45, 0.50, 0.55, 0.60)],
+                *[round(BENCHMARK * r) for r in (0.92, 0.95, 1.00, 1.05, 1.08)],
+            ]
+        ])
+    )
+
+    severity = {"Strong": 2, "Moderate": 1, "No anomaly": 0}
+    any_flagged = False
+
+    for ratio in (0.35, 0.45, 0.55, 0.70, 0.90, 1.00, 1.10):
+        flagged, expl = mba.is_anomaly(billed=BENCHMARK * ratio, benchmark=BENCHMARK)
+        level = next(v for k, v in severity.items() if expl["recommendation"].startswith(k))
+        score = float(expl["ml_score"])
+
+        # The text and the flag must never disagree
+        if flagged:
+            any_flagged = True
+            assert level == 2, f"flagged at ratio {ratio} but got: {expl['recommendation']}"
+            assert score >= mba.FLAG_THRESHOLD
+        else:
+            assert level < 2, f"unflagged at ratio {ratio} but text says strong anomaly"
+
+        # Band boundaries must match the documented constants
+        if score >= mba.FLAG_THRESHOLD:
+            assert level == 2
+        elif score >= mba.MODERATE_THRESHOLD:
+            assert level == 1
+        else:
+            assert level == 0
+
+    assert any_flagged, "detector flagged nothing in the sweep — bands untested"
+
+    # An honest household is never presented as a strong anomaly
+    _, honest = mba.is_anomaly(billed=BENCHMARK, benchmark=BENCHMARK)
+    assert not honest["recommendation"].startswith("Strong")
