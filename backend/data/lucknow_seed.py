@@ -5,7 +5,9 @@ Real anchor: Lucknow Municipal Corporation (LMC) water supply data.
 - City-level NRW: ~55% (source: AMRUT 2.0 MIS, 2024; Jal Shakti Ministry reports)
 - Total water produced: ~650 MLD (million litres per day)
 - Water lost (NRW): ~357 MLD
-- Annual revenue loss @ Rs 5/1000L tariff: ~Rs 651 crore/year (~Rs 650M/year)
+- Annual revenue loss @ Rs 5/1000L tariff: ~Rs 650 million/year (~Rs 65 crore)
+  (357 MLD lost x 365 days x Rs 0.005/L = Rs 650.7 million; the roadmap cites
+   "Rs 650M/yr" -- NOT "Rs 651 crore", which would be a 10x overstatement)
 - Population served: ~3.5 million (2024 estimate, LMC records)
 
 Zone-level data is synthetic but mathematically consistent:
@@ -76,10 +78,14 @@ def verify_aggregate():
     print("=" * 55)
     print(f"  Total daily inflow : {total_mld:.1f} MLD  (target ~650)")
     print(f"  Weighted NRW       : {actual_nrw:.1f}%   (target ~55%)")
-    print(f"  Annual loss (INR)  : Rs {annual_loss/1e7:.0f} crore  (target ~651)")
+    print(f"  Annual loss (INR)  : Rs {annual_loss/1e6:.0f} million  (target ~650)")
+    print(f"                     = Rs {annual_loss/1e7:.1f} crore/year")
     print("=" * 55)
     assert abs(actual_nrw - 55.0) < 3.0, f"NRW {actual_nrw:.1f}% too far from 55%"
     assert abs(total_mld - 650.0) < 50, f"Inflow {total_mld:.0f} MLD too far from 650"
+    assert abs(annual_loss - 650e6) / 650e6 < 0.10, (
+        f"Annual loss Rs {annual_loss/1e6:.0f}M too far from Rs 650M"
+    )
     print("  PASSED\n")
 
 

@@ -6,15 +6,45 @@ from backend.data.db_schema import Zone
 
 client = TestClient(app)
 
+TEST_ZONE_ID = "ZONE-TEST"
+
+
 @pytest.fixture(autouse=True)
 def setup_test_db():
+    """
+    Creates the test zone, then removes every row the tests wrote on teardown.
+
+    Earlier versions created ZONE-TEST and left it behind: the fake zone and
+    its snapshots/alerts/actions leaked into the shared demo dataset (13 zones
+    instead of 12, town-wide NRW forecast corrupted by 3 stray snapshots).
+    A test fixture must never leave data in the database judges look at.
+    """
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
-    # Create sample demo zone if not present
-    if not db.query(Zone).filter(Zone.id == "ZONE-TEST").first():
-        db.add(Zone(id="ZONE-TEST", name="Test Zone", pipe_length_km=12.0, connection_count=600, tariff_rate=0.005))
+    try:
+        if not db.query(Zone).filter(Zone.id == TEST_ZONE_ID).first():
+            db.add(Zone(
+                id=TEST_ZONE_ID,
+                name="Test Zone",
+                pipe_length_km=12.0,
+                connection_count=600,
+                tariff_rate=0.005,
+            ))
+            db.commit()
+
+        yield
+
+        # --- teardown: delete the test zone and everything referencing it ---
+        # reversed(sorted_tables) removes children before their parents.
+        for table in reversed(Base.metadata.sorted_tables):
+            if "zone_id" in table.c:
+                db.execute(table.delete().where(table.c.zone_id == TEST_ZONE_ID))
+        db.execute(
+            Zone.__table__.delete().where(Zone.__table__.c.id == TEST_ZONE_ID)
+        )
         db.commit()
-    db.close()
+    finally:
+        db.close()
 
 def test_get_zones():
     res = client.get("/zones")

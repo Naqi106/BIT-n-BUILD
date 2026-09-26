@@ -21,13 +21,18 @@ from datetime import datetime
 from typing import List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from backend.app.db import get_db
 from backend.data.db_schema import Zone, RawReading, BillingRecord
 from backend.app.engines.ml_billing_anomaly import FALLBACK_RATIO
+from backend.app.engines.trend_forecast import (
+    forecast,
+    load_town_snapshots,
+    load_zone_snapshots,
+)
 
 router = APIRouter(prefix="/data", tags=["Data Pipeline"])
 
@@ -51,6 +56,38 @@ class TownProfile(BaseModel):
     anchor_source_citation: str
 
 
+class NRWForecast(BaseModel):
+    """
+    30-day NRW projection (trend-forecasting model, Tier 1 optional).
+
+    Numeric fields are null when is_sufficient=False — the endpoint then
+    carries an explicit message instead of a fabricated number.
+    """
+    zone_id: Optional[str] = None
+    is_sufficient: bool
+    observations: int
+    required_observations: Optional[int] = None
+    message: Optional[str] = None
+    method: Optional[str] = None
+    window_days: Optional[float] = None
+    horizon_days: Optional[int] = None
+    tariff_rate: Optional[float] = None
+    current_loss_litres_per_day: Optional[float] = None
+    projected_loss_litres_per_day: Optional[float] = None
+    loss_slope_litres_per_day_per_day: Optional[float] = None
+    loss_change_pct: Optional[float] = None
+    loss_r2: Optional[float] = None
+    trend_confidence: Optional[str] = None
+    direction: Optional[str] = None
+    projected_loss_litres: Optional[float] = None
+    projected_loss_rupees: Optional[float] = None
+    current_nrw_pct: Optional[float] = None
+    projected_nrw_pct: Optional[float] = None
+    nrw_slope_pp_per_day: Optional[float] = None
+    nrw_r2: Optional[float] = None
+    interpretation: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Real Lucknow anchor figures -- used by GET /data/town-profile
 # Cited: AMRUT 2.0 MIS, Jal Shakti Ministry Annual Report 2024
@@ -58,7 +95,7 @@ class TownProfile(BaseModel):
 LUCKNOW_PROFILE = TownProfile(
     town_name="Lucknow",
     total_nrw_percent=55.0,
-    estimated_annual_loss_inr=650_737_500.0,   # Rs ~651 crore/year
+    estimated_annual_loss_inr=650_737_500.0,   # Rs 650.7 million/yr (Rs 65 crore)
     total_zones=12,
     population_covered=3_495_000,
     data_source="AMRUT 2.0 MIS; Jal Shakti Ministry Annual Report 2024; LMC Water Audit 2023-24",
@@ -225,3 +262,58 @@ def get_town_profile():
     Judges can ask 'where did this data come from?' -- this endpoint answers that.
     """
     return LUCKNOW_PROFILE
+
+
+# ---------------------------------------------------------------------------
+# GET /data/nrw-forecast            -- town-wide 30-day projection
+# GET /data/nrw-forecast/{zone_id}  -- single-zone 30-day projection
+#
+# Tier 1 optional model (Person 1, Hours 10-15): turns 13 weeks of
+# nrw_snapshots into the pitch line "if unfixed, projected loss over the next
+# 30 days is X litres / Rs Y", which feeds the payback/ROI story.
+# ---------------------------------------------------------------------------
+
+def _town_tariff_rate(db: Session) -> float:
+    """
+    Tariff is configurable per zone (roadmap deprecation of the hardcoded
+    TARIFF_RATE constant); the town-wide forecast uses the mean of the zones.
+    """
+    from sqlalchemy import func
+
+    average = db.query(func.avg(Zone.tariff_rate)).scalar()
+    return float(average) if average else 0.005
+
+
+@router.get("/nrw-forecast", response_model=NRWForecast)
+def get_town_nrw_forecast(
+    horizon_days: int = Query(30, ge=1, le=365, description="Projection window in days"),
+    db: Session = Depends(get_db),
+):
+    """
+    Town-wide projection: every zone's daily loss summed per snapshot date,
+    NRW percentage averaged across zones, then fitted for the horizon.
+    """
+    return forecast(
+        load_town_snapshots(db),
+        tariff_rate=_town_tariff_rate(db),
+        horizon_days=horizon_days,
+    )
+
+
+@router.get("/nrw-forecast/{zone_id}", response_model=NRWForecast)
+def get_zone_nrw_forecast(
+    zone_id: str,
+    horizon_days: int = Query(30, ge=1, le=365, description="Projection window in days"),
+    db: Session = Depends(get_db),
+):
+    """Single-zone projection using that zone's configured tariff rate."""
+    zone = db.query(Zone).filter(Zone.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail=f"Zone '{zone_id}' not found.")
+
+    return forecast(
+        load_zone_snapshots(db, zone_id),
+        tariff_rate=zone.tariff_rate or 0.005,
+        horizon_days=horizon_days,
+        zone_id=zone_id,
+    )
