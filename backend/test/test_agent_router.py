@@ -17,14 +17,17 @@ All Groq API calls are mocked — no real Groq calls in CI.
 """
 
 import json
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
 
 from backend.app.main import app
 from backend.app.db import Base, engine, SessionLocal, get_db
 from backend.data.db_schema import Zone, InvestigationMemory, ActionLog
+from backend.app.agent.schemas import AgentInvestigation
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +35,7 @@ from backend.data.db_schema import Zone, InvestigationMemory, ActionLog
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def setup_db():
-    """Ensure tables exist and a test zone is present for every test."""
+    """Ensure tables exist and test zones are present for every test."""
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     if not db.query(Zone).filter(Zone.id == "ZONE-AGENT-TEST").first():
@@ -43,6 +46,16 @@ def setup_db():
             connection_count=500,
             avg_pressure_bar=2.5,
             tariff_rate=0.005,
+        ))
+        db.commit()
+    if not db.query(Zone).filter(Zone.id == "ZONE-AGENT-TEST-2").first():
+        db.add(Zone(
+            id="ZONE-AGENT-TEST-2",
+            name="Agent Router Test Zone 2",
+            pipe_length_km=8.0,
+            connection_count=300,
+            avg_pressure_bar=2.0,
+            tariff_rate=0.006,
         ))
         db.commit()
     db.close()
@@ -408,3 +421,208 @@ def test_memory_context_not_treated_as_evidence(client):
     data = res.json()
     assert data["ai_available"] is False
     assert "unvalidated structure" in data["summary"]
+
+
+# ===========================================================================
+# Test 11: Concurrent investigations via asyncio.gather
+# ===========================================================================
+def test_concurrent_investigations():
+    """
+    Issues 3 concurrent investigation requests via asyncio.gather:
+      - Req 1: ZONE-AGENT-TEST (triggers run_water_balance)
+      - Req 2: ZONE-AGENT-TEST (triggers run_mnf)
+      - Req 3: ZONE-AGENT-TEST-2 (triggers run_billing_anomaly)
+
+    Verifies:
+      1. Requests do not crash.
+      2. Responses remain associated with the correct zone.
+      3. Evidence from one request does NOT leak into another.
+      4. Memory entries are correctly persisted for each zone without corruption.
+      5. No shared mutable agent state is corrupted across concurrent executions.
+      6. All responses validate as AgentInvestigation models.
+    """
+    async def _run():
+        async def mock_groq_create(model=None, messages=None, **kwargs):
+            last_msg = messages[-1] if messages else {}
+
+            # Round 2: Tool execution result provided, return grounded structured JSON
+            if last_msg.get("role") == "tool":
+                tool_name = last_msg.get("name")
+                if tool_name == "run_water_balance":
+                    return _make_text_response(json.dumps({
+                        "zone_id": "ZONE-AGENT-TEST",
+                        "risk_level": "HIGH",
+                        "likely_cause": "physical_leakage",
+                        "confidence": 0.88,
+                        "summary": "Zone 1 high water balance loss detected.",
+                        "evidence": [{
+                            "source": "run_water_balance",
+                            "metric": "loss_litres",
+                            "value": 25000.0,
+                            "unit": "litres",
+                            "explanation": "Significant gross loss calculated.",
+                        }],
+                        "recommendations": [{
+                            "action": "Repair main pipe",
+                            "priority": "HIGH",
+                            "reason": "Water balance loss exceeds threshold.",
+                        }],
+                        "missing_data": [],
+                        "ai_available": True,
+                    }))
+                elif tool_name == "run_mnf":
+                    return _make_text_response(json.dumps({
+                        "zone_id": "ZONE-AGENT-TEST",
+                        "risk_level": "CRITICAL",
+                        "likely_cause": "physical_leakage",
+                        "confidence": 0.91,
+                        "summary": "Zone 1 night flow anomaly detected.",
+                        "evidence": [{
+                            "source": "run_mnf",
+                            "metric": "night_flow_litres",
+                            "value": 3200.0,
+                            "unit": "litres",
+                            "explanation": "High baseline night consumption.",
+                        }],
+                        "recommendations": [{
+                            "action": "Acoustic survey",
+                            "priority": "URGENT",
+                            "reason": "Suspected hidden night leak.",
+                        }],
+                        "missing_data": [],
+                        "ai_available": True,
+                    }))
+                elif tool_name == "run_billing_anomaly":
+                    return _make_text_response(json.dumps({
+                        "zone_id": "ZONE-AGENT-TEST-2",
+                        "risk_level": "MEDIUM",
+                        "likely_cause": "apparent_loss_theft",
+                        "confidence": 0.75,
+                        "summary": "Zone 2 unmetered billing discrepancies.",
+                        "evidence": [{
+                            "source": "run_billing_anomaly",
+                            "metric": "anomaly_count",
+                            "value": 3,
+                            "unit": None,
+                            "explanation": "Suspect consumer meters identified.",
+                        }],
+                        "recommendations": [{
+                            "action": "Audit consumer meters",
+                            "priority": "MEDIUM",
+                            "reason": "Zero consumption flags detected.",
+                        }],
+                        "missing_data": [],
+                        "ai_available": True,
+                    }))
+
+            # Round 1: Model requests a tool call based on user question
+            user_content = last_msg.get("content", "")
+            if "Req1" in user_content or "water balance" in user_content:
+                return _make_tool_call_response(
+                    "run_water_balance",
+                    {"zone_id": "ZONE-AGENT-TEST"},
+                    call_id="call_wb_conc_1",
+                )
+            elif "Req2" in user_content or "night flow" in user_content:
+                return _make_tool_call_response(
+                    "run_mnf",
+                    {"zone_id": "ZONE-AGENT-TEST"},
+                    call_id="call_mnf_conc_2",
+                )
+            else:
+                return _make_tool_call_response(
+                    "run_billing_anomaly",
+                    {"zone_id": "ZONE-AGENT-TEST-2"},
+                    call_id="call_bill_conc_3",
+                )
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=mock_groq_create)
+
+        with patch("backend.app.agent.agent.AsyncGroq", return_value=mock_client), \
+             patch("backend.app.agent.agent.os.getenv", side_effect=lambda k, d=None: "fake-key" if k == "GROQ_API_KEY" else d):
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                t1 = ac.post("/agent/investigate", json={
+                    "zone_id": "ZONE-AGENT-TEST",
+                    "question": "Req1: Investigate water balance",
+                })
+                t2 = ac.post("/agent/investigate", json={
+                    "zone_id": "ZONE-AGENT-TEST",
+                    "question": "Req2: Investigate night flow",
+                })
+                t3 = ac.post("/agent/investigate", json={
+                    "zone_id": "ZONE-AGENT-TEST-2",
+                    "question": "Req3: Investigate billing anomaly",
+                })
+
+                res1, res2, res3 = await asyncio.gather(t1, t2, t3)
+
+        # 1. Verify all requests completed successfully without crashing
+        assert res1.status_code == 200
+        assert res2.status_code == 200
+        assert res3.status_code == 200
+
+        d1 = res1.json()
+        d2 = res2.json()
+        d3 = res3.json()
+
+        # 2. Verify all responses validate as AgentInvestigation Pydantic schemas
+        inv1 = AgentInvestigation.model_validate(d1)
+        inv2 = AgentInvestigation.model_validate(d2)
+        inv3 = AgentInvestigation.model_validate(d3)
+
+        # 3. Verify responses remain associated with the correct zone
+        assert inv1.zone_id == "ZONE-AGENT-TEST"
+        assert inv2.zone_id == "ZONE-AGENT-TEST"
+        assert inv3.zone_id == "ZONE-AGENT-TEST-2"
+
+        assert inv1.summary == "Zone 1 high water balance loss detected."
+        assert inv2.summary == "Zone 1 night flow anomaly detected."
+        assert inv3.summary == "Zone 2 unmetered billing discrepancies."
+
+        # 4. Verify evidence from one request does NOT leak into another
+        d1_sources = [e["source"] for e in d1["evidence"]]
+        d2_sources = [e["source"] for e in d2["evidence"]]
+        d3_sources = [e["source"] for e in d3["evidence"]]
+
+        assert d1_sources == ["run_water_balance"]
+        assert d2_sources == ["run_mnf"]
+        assert d3_sources == ["run_billing_anomaly"]
+
+        assert "run_mnf" not in d1_sources
+        assert "run_billing_anomaly" not in d1_sources
+        assert "run_water_balance" not in d2_sources
+        assert "run_billing_anomaly" not in d2_sources
+        assert "run_water_balance" not in d3_sources
+        assert "run_mnf" not in d3_sources
+
+        # 5. Verify memory persistence in DB: rows exist for each zone without corruption
+        db = SessionLocal()
+        try:
+            mem1 = (
+                db.query(InvestigationMemory)
+                .filter(InvestigationMemory.zone_id == "ZONE-AGENT-TEST")
+                .order_by(InvestigationMemory.timestamp.desc())
+                .all()
+            )
+            mem2 = (
+                db.query(InvestigationMemory)
+                .filter(InvestigationMemory.zone_id == "ZONE-AGENT-TEST-2")
+                .order_by(InvestigationMemory.timestamp.desc())
+                .all()
+            )
+
+            assert len(mem1) >= 2
+            zone1_summaries = [m.summary for m in mem1]
+            assert any("water balance" in s for s in zone1_summaries)
+            assert any("night flow" in s for s in zone1_summaries)
+
+            assert len(mem2) >= 1
+            zone2_summaries = [m.summary for m in mem2]
+            assert any("billing discrepancies" in s for s in zone2_summaries)
+        finally:
+            db.close()
+
+    asyncio.run(_run())
+
