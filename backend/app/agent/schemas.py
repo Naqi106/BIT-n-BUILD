@@ -35,3 +35,19 @@ class AgentInvestigation(BaseModel):
     missing_data: list[str] = Field(default_factory=list)
 
     ai_available: bool = True
+
+
+# ==============================================================================
+# Block 2 Convention: get_correlation_status()
+# Water quality and contamination telemetry are currently unconfigured in the DB.
+# The future agent tool MUST NOT fabricate correlations or fake quality metrics.
+# When called, it must follow this safe convention:
+# {
+#     "correlation_detected": False,
+#     "risk_level": "NONE",
+#     "water_quality_events": 0,
+#     "details": "No water-quality data source is currently configured.",
+#     "is_simulated": False,
+#     "status": "NOT_AVAILABLE"
+# }
+# ==============================================================================

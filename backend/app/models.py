@@ -49,6 +49,8 @@ class PaybackResponse(BaseModel):
     daily_revenue_loss: float
     estimated_repair_cost: float
     payback_period_days: float
+    is_simulated: bool = False
+    data_source: str = "ACTIVE_ALERT"
 
 # Actions & Recovery Workflow
 class ActionCreate(BaseModel):
