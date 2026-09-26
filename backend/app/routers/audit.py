@@ -95,7 +95,7 @@ def get_ppa_leak_location(zone_id: str, db: Session = Depends(get_db)):
     Per solution doc, Level-1 hardware is simulated for 24-hr build,
     so 'is_simulated = True' is explicitly declared per roadmap.
     """
-    zone = db.query(Zone).filter(Zone.id == zone_id).first()
+    zone = db.query(Zone).filter(Zone.id == zone_id).first() if db is not None else None
     if not zone:
         base_pressure = 2.5
         pipe_len = 8.0

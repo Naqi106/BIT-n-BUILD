@@ -58,12 +58,16 @@ def trigger_detection(zone_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Zone not found.")
 
     latest_reading = db.query(RawReading).filter(RawReading.zone_id == zone_id).order_by(RawReading.timestamp.desc()).first()
-    inflow = latest_reading.inflow_litres if latest_reading else 100000.0
-    night_flow = latest_reading.night_flow_litres if latest_reading else None
+    has_real_reading = latest_reading is not None
+    inflow = latest_reading.inflow_litres if has_real_reading else 100000.0
+    night_flow = latest_reading.night_flow_litres if has_real_reading else None
 
     billed_sum = db.query(func.sum(BillingRecord.billed_litres)).filter(BillingRecord.zone_id == zone_id).scalar()
-    billed_litres = billed_sum if billed_sum else (inflow * 0.45)
+    has_real_billing = billed_sum is not None
+    billed_litres = billed_sum if has_real_billing else (inflow * 0.45)
     readings_count = db.query(RawReading).filter(RawReading.zone_id == zone_id).count()
+
+    is_fallback = not (has_real_reading and has_real_billing)
 
     result = process_zone(
         zone_id=zone_id,
@@ -75,6 +79,12 @@ def trigger_detection(zone_id: str, db: Session = Depends(get_db)):
         avg_pressure_bar=zone.avg_pressure_bar,
         readings_count=max(readings_count, 1)
     )
+
+    result["is_simulated"] = is_fallback
+    result["data_source"] = "DEFAULT_FALLBACK" if is_fallback else "TELEMETRY"
+
+    if is_fallback:
+        result["details"] = f"[DEFAULT FALLBACK DATA - NOT REAL TELEMETRY] {result['details']}"
 
     if result["is_leak_detected"]:
         alert = LeakAlert(
@@ -108,13 +118,19 @@ def get_payback(zone_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Zone not found.")
 
     latest_alert = db.query(LeakAlert).filter(LeakAlert.zone_id == zone_id, LeakAlert.status == "ACTIVE").first()
+    is_fallback = latest_alert is None
     daily_loss = latest_alert.estimated_loss_litres if latest_alert else 25000.0
 
     res = calculate_payback_period(
         daily_loss_litres=daily_loss,
         tariff_rate=zone.tariff_rate
     )
-    return PaybackResponse(zone_id=zone_id, **res)
+    return PaybackResponse(
+        zone_id=zone_id,
+        is_simulated=is_fallback,
+        data_source="DEFAULT_FALLBACK" if is_fallback else "ACTIVE_ALERT",
+        **res
+    )
 
 @router.get("/revenue/summary", response_model=List[RevenueLogResponse])
 def get_revenue_summary(db: Session = Depends(get_db)):
