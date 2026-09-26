@@ -7,6 +7,7 @@ Combines 3 core Level-0 techniques according to IWA/AWWA standards:
 """
 
 from typing import Dict, Any, List, Optional
+from backend.app.engines.ml_confidence import compute_confidence
 
 def water_balance_loss(inflow_litres: float, billed_litres: float, authorized_unbilled_litres: float = 0.0) -> float:
     """Calculates gross water loss."""
@@ -33,30 +34,21 @@ def calculate_dynamic_confidence(
     has_billing: bool,
     has_mnf: bool,
     methods_count: int,
-    readings_count: int = 1
+    readings_count: int = 1,
+    reading_variance: float = 0.1,
 ) -> float:
-    """Replaces hardcoded 0.7 confidence score with dynamic calculation."""
-    score = 0.0
-    if has_inflow and has_billing:
-        score += 0.35
-    if has_mnf:
-        score += 0.15
-
-    if methods_count >= 3:
-        score += 0.3
-    elif methods_count == 2:
-        score += 0.2
-    else:
-        score += 0.1
-
-    if readings_count >= 10:
-        score += 0.2
-    elif readings_count >= 3:
-        score += 0.15
-    else:
-        score += 0.1
-
-    return round(min(0.98, max(0.20, score)), 2)
+    """
+    Dynamic confidence score.  Delegates to ml_confidence.compute_confidence
+    so the hardcoded 0.7 constant is fully removed from this codebase.
+    """
+    return compute_confidence(
+        has_inflow=has_inflow,
+        has_billing=has_billing,
+        has_mnf=has_mnf,
+        reading_count=readings_count,
+        reading_variance=reading_variance,
+        methods_agreed=methods_count,
+    )
 
 def process_zone(
     zone_id: str,

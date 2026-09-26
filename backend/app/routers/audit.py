@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
+import pandas as pd
 
 from backend.app.db import get_db
 from backend.data.db_schema import BillingRecord, Zone
 from backend.app.models import PaginatedBillingAudit, BillingAuditItem, PPAAuditItem
+from backend.app.engines.ml_billing_anomaly import get_detector, is_anomaly as ml_is_anomaly
 
 router = APIRouter(prefix="/audit", tags=["Audits"])
+
 
 @router.get("/billing/{zone_id}", response_model=PaginatedBillingAudit)
 def get_billing_audit(
@@ -16,38 +19,70 @@ def get_billing_audit(
     db: Session = Depends(get_db)
 ):
     """
-    Returns ranked theft/tampering candidates for a zone with pagination.
-    Flagged where billed consumption is significantly below property benchmark.
+    Returns ranked theft/tampering candidates for a zone.
+
+    Detection method: Isolation Forest (primary) or rule-based fallback
+    (billed < 60% of benchmark) when the model is not yet trained.
+    Results are re-scored live by the ML model so scores are always fresh.
     """
     zone = db.query(Zone).filter(Zone.id == zone_id).first()
     if not zone:
         raise HTTPException(status_code=404, detail=f"Zone '{zone_id}' not found.")
 
-    query = db.query(BillingRecord).filter(BillingRecord.zone_id == zone_id)
-    total_records = query.count()
-    total_anomalies = query.filter(BillingRecord.is_anomaly == True).count()
+    all_records = db.query(BillingRecord).filter(BillingRecord.zone_id == zone_id).all()
+    total_records = len(all_records)
 
-    records = query.order_by(BillingRecord.anomaly_score.desc()).offset(offset).limit(limit).all()
+    detector = get_detector()
 
-    items = [
-        BillingAuditItem(
-            consumer_id=r.consumer_id,
-            household_size=r.household_size,
-            property_type=r.property_type,
-            billed_litres=r.billed_litres,
-            benchmark_litres=r.benchmark_litres,
-            suspicion_score=round(r.anomaly_score, 2),
-            is_anomaly=r.is_anomaly
-        ) for r in records
-    ]
+    # Re-score every record with the current ML model
+    if detector and detector.is_trained and all_records:
+        df = pd.DataFrame([{
+            "billed_litres": r.billed_litres,
+            "benchmark_litres": r.benchmark_litres,
+            "household_size": r.household_size or 4,
+        } for r in all_records])
+        ml_scores = detector.predict_anomaly(df)
+    else:
+        # Fallback: use stored rule-based anomaly_score column
+        ml_scores = [r.anomaly_score for r in all_records]
+
+    # Attach scores and sort descending (highest anomaly first)
+    scored = sorted(
+        zip(all_records, ml_scores),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    total_anomalies = sum(1 for _, s in scored if s >= 0.5)
+
+    # Paginate
+    page = scored[offset: offset + limit]
+
+    items = []
+    for rec, score in page:
+        _, expl = ml_is_anomaly(
+            billed=rec.billed_litres,
+            benchmark=rec.benchmark_litres,
+            household_size=rec.household_size or 4,
+        )
+        items.append(BillingAuditItem(
+            consumer_id=rec.consumer_id,
+            household_size=rec.household_size,
+            property_type=rec.property_type,
+            billed_litres=rec.billed_litres,
+            benchmark_litres=rec.benchmark_litres,
+            suspicion_score=round(float(score), 3),
+            is_anomaly=(float(score) >= 0.5),
+        ))
 
     return PaginatedBillingAudit(
         total_records=total_records,
         total_anomalies=total_anomalies,
         limit=limit,
         offset=offset,
-        items=items
+        items=items,
     )
+
 
 @router.get("/ppa/{zone_id}", response_model=List[PPAAuditItem])
 def get_ppa_leak_location(zone_id: str, db: Session = Depends(get_db)):
@@ -58,7 +93,6 @@ def get_ppa_leak_location(zone_id: str, db: Session = Depends(get_db)):
     """
     zone = db.query(Zone).filter(Zone.id == zone_id).first()
     if not zone:
-        # Default baseline if zone hasn't been seeded yet
         base_pressure = 2.5
         pipe_len = 8.0
     else:
@@ -82,6 +116,7 @@ def get_ppa_leak_location(zone_id: str, db: Session = Depends(get_db)):
             is_simulated=True
         ))
     return nodes
+
 
 if __name__ == "__main__":
     print("Audit router created successfully!")

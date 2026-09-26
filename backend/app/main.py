@@ -1,15 +1,43 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.data.db_schema import init_db
-from backend.app.routers import core, audit, actions, data_pipeline
+from contextlib import asynccontextmanager
+import pandas as pd
 
-# Auto-initialize database tables on server startup
-init_db()
+from backend.app.db import SessionLocal
+from backend.data.db_schema import init_db, BillingRecord
+from backend.app.routers import core, audit, actions, data_pipeline
+from backend.app.engines.ml_billing_anomaly import train_detector
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize DB tables
+    init_db()
+    
+    # Train Isolation Forest model on startup
+    db = SessionLocal()
+    try:
+        records = db.query(BillingRecord).all()
+        if records:
+            df = pd.DataFrame([{
+                "billed_litres": r.billed_litres,
+                "benchmark_litres": r.benchmark_litres,
+                "household_size": r.household_size or 4,
+            } for r in records])
+            train_detector(df)
+            print("[INFO] Isolation Forest model trained with", len(df), "records.")
+    except Exception as e:
+        print("[WARNING] Could not train Isolation Forest model at startup:", e)
+    finally:
+        db.close()
+        
+    yield
+    # Shutdown
 
 app = FastAPI(
-    title="AltoMare Non-Revenue Water Platform API",
-    description="Backend API for water balance audits, MNF estimation, billing fraud, and payback ROI.",
-    version="2.0.0"
+    title="fp-26-44:  -  NRW Platform",
+    description="Backend API for water balance0.7_loss,24h_monitoring, billing fraud, and_AI_recommendations.",
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # Enable CORS for frontend integration

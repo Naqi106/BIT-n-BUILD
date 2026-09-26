@@ -1,8 +1,12 @@
 import os
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from dotenv import load_dotenv
 
+# Try to load from current dir, and from backend/ if not found
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 load_dotenv()
 
 # Defaults to local SQLite for instant testing if PostgreSQL is not running

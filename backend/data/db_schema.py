@@ -11,11 +11,14 @@ class Zone(Base):
     pipe_length_km = Column(Float, default=10.0)
     connection_count = Column(Integer, default=500)
     avg_pressure_bar = Column(Float, default=2.5)
-    tariff_rate = Column(Float, default=0.005)  # ₹ per litre, customizable per zone
-    data_level = Column(Integer, default=0)     # 0: Manual, 1: Partial IoT, 2: SCADA
+    tariff_rate = Column(Float, default=0.005)  # ₹ per litre (Rs 5 / 1000L)
+    data_level = Column(Integer, default=0)     # 0: Manual, 1: Partial, 2: SCADA
+    population = Column(Integer, default=5000)
+    pipe_age_years = Column(Integer, default=15)
 
     readings = relationship("RawReading", back_populates="zone", cascade="all, delete-orphan")
     alerts = relationship("LeakAlert", back_populates="zone", cascade="all, delete-orphan")
+
 
 class RawReading(Base):
     __tablename__ = "raw_readings"
@@ -28,6 +31,7 @@ class RawReading(Base):
     pressure_bar = Column(Float, nullable=True)
 
     zone = relationship("Zone", back_populates="readings")
+
 
 class LeakAlert(Base):
     __tablename__ = "leak_alerts"
@@ -44,6 +48,7 @@ class LeakAlert(Base):
 
     zone = relationship("Zone", back_populates="alerts")
 
+
 class BillingRecord(Base):
     __tablename__ = "billing_records"
 
@@ -58,6 +63,7 @@ class BillingRecord(Base):
     is_anomaly = Column(Boolean, default=False)
     billing_period = Column(String(20), default="2026-Q1")
 
+
 class RevenueLog(Base):
     __tablename__ = "revenue_log"
 
@@ -65,12 +71,12 @@ class RevenueLog(Base):
     zone_id = Column(String(50), ForeignKey("zones.id"), nullable=False)
     alert_id = Column(Integer, ForeignKey("leak_alerts.id"), nullable=True)
     litres_recovered = Column(Float, nullable=False)
-    tariff_rate = Column(Float, nullable=False)
+    tariff_rate = Column(Float, nullable=False, default=0.005)
     revenue_recovered = Column(Float, nullable=False) # litres * tariff_rate
     recovered_at = Column(DateTime, default=datetime.utcnow)
     notes = Column(Text, nullable=True)
 
-#3 new tables
+
 class NRWSnapshot(Base):
     """Stores historical snapshots of NRW % so frontend charts show real history."""
     __tablename__ = "nrw_snapshots"
@@ -82,6 +88,7 @@ class NRWSnapshot(Base):
     inflow_litres = Column(Float, nullable=False)
     billed_litres = Column(Float, nullable=False)
     loss_litres = Column(Float, nullable=False)
+
 
 class ActionLog(Base):
     """Tracks officer approvals and resolutions for AI recommendations."""
@@ -100,6 +107,7 @@ class ActionLog(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
 
+
 class InvestigationMemory(Base):
     """Provides memory of past incidents, repairs, and outcomes per zone."""
     __tablename__ = "investigation_memory"
@@ -111,9 +119,10 @@ class InvestigationMemory(Base):
     outcome = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
     init_db()
-    print("Database tables created successfully!")
+    print("Database519 tables created/aligned successfully!")
