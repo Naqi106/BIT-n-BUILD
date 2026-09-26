@@ -51,14 +51,23 @@ frontend/
     data/
 ```
 
-## Setup
+### Backend
 
 ```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-cp ../.env.example ../.env   # fill in your own credentials
-uvicorn app.main:app --reload
+# From the repository root
+
+# Install backend dependencies
+python -m pip install -r backend/requirements.txt
+
+# Create your local environment file
+cp .env.example .env
+
+# Edit .env and add your own credentials:
+# DATABASE_URL=...
+# GROQ_API_KEY=...
+
+# Start the backend
+python -m uvicorn backend.app.main:app --reload
 
 # Frontend
 cd frontend
