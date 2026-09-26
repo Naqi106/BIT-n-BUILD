@@ -16,7 +16,7 @@ Score components (equal weight, averaged to [0, 1]):
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 
@@ -109,7 +109,7 @@ def get_confidence_breakdown(
             "variance_weight": round(max(0.0, 1.0 - float(reading_variance)), 3),
             "method_weight": round(method_table.get(methods_agreed, 0.33), 3),
         },
-        "calculated_at": datetime.utcnow().isoformat(),
+        "calculated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
