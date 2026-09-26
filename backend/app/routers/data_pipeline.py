@@ -7,6 +7,7 @@ Endpoints:
   GET  /data/nrw-forecast{,/zone_id}  -- 30-day NRW trend projection (town or single zone)
   GET  /data/investigations/{zone_id} -- "previously flagged" note + history (zone detail view)
   POST /data/investigations/{zone_id} -- append an investigation note (officer / Copilot)
+  GET  /data/satellite/ndwi/{zone_id} -- Sentinel-2 NDWI second opinion (roadmap 5.4)
 
 CSV upload supports two file types (detected by column headers):
   1. readings  -- columns: zone_id, inflow_litres, timestamp
@@ -30,7 +31,10 @@ from pydantic import BaseModel
 
 from backend.app.db import get_db
 from backend.data.db_schema import Zone, RawReading, BillingRecord
-from backend.app.engines.ml_billing_anomaly import FALLBACK_RATIO
+from backend.app.engines import satellite
+from backend.app.engines.ml_billing_anomaly import (
+    FALLBACK_RATIO, FLAG_THRESHOLD, get_detector,
+)
 from backend.app.engines.trend_forecast import (
     forecast,
     load_town_snapshots,
@@ -124,6 +128,45 @@ class InvestigationCreate(BaseModel):
     summary: str
     action_taken: Optional[str] = None
     outcome: Optional[str] = None
+
+
+class SatelliteCoordinates(BaseModel):
+    lat: float
+    lng: float
+
+
+class SatelliteScene(BaseModel):
+    id: Optional[str] = None
+    datetime: Optional[str] = None
+    cloud_cover: Optional[float] = None
+    platform: Optional[str] = None
+
+
+class SatelliteNDWIResponse(BaseModel):
+    """
+    Sentinel-2 NDWI second opinion (roadmap 5.4).
+
+    Never fabricates: `scene` comes from a live, key-free catalog query and
+    `ndwi_score` is null unless real reflectance is supplied via
+    ?green=&nir= -- there is no simulated-score path in this endpoint.
+    """
+    zone_id: str
+    coordinates: Optional[SatelliteCoordinates] = None
+    status: str                 # OK | NO_SCENE | CATALOG_UNAVAILABLE | NO_COORDINATES
+    is_simulated: bool = False  # always False here: no demo bands on this route
+    data_source: str
+    scene: Optional[SatelliteScene] = None
+    ndwi_score: Optional[float] = None
+    ndwi_status: str            # computed | bands_not_configured
+    anomaly_threshold: Optional[float] = None   # set only when computed
+    surface_moisture_anomaly: Optional[bool] = None
+    zone_flagged: bool
+    flag_sources: List[str] = []
+    billing_flagged_records: int = 0
+    billing_detection_method: Optional[str] = None   # isolation_forest | rule_fallback
+    nrw_trend: Optional[str] = None
+    interpretation: str
+    message: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +458,154 @@ def post_zone_investigation(
         action_taken=body.action_taken,
         outcome=body.outcome,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /data/satellite/ndwi/{zone_id}
+# Roadmap 5.4: free Sentinel-2 NDWI second opinion on a flagged zone.
+# ---------------------------------------------------------------------------
+@router.get("/satellite/ndwi/{zone_id}", response_model=SatelliteNDWIResponse)
+def get_zone_ndwi_second_opinion(
+    zone_id: str,
+    green: Optional[float] = Query(
+        None, ge=0, le=1,
+        description="Real B03 green reflectance (0-1); pass together with nir to compute NDWI",
+    ),
+    nir: Optional[float] = Query(
+        None, ge=0, le=1,
+        description="Real B08 NIR reflectance (0-1); pass together with green to compute NDWI",
+    ),
+    days: int = Query(30, ge=1, le=90, description="Catalog lookback window in days"),
+    db: Session = Depends(get_db),
+):
+    """
+    Satellite soil-moisture second opinion for a zone (roadmap section 5.4).
+
+    - `scene`: live, key-free query of the Sentinel-2 L2A catalog for the
+      zone's ward centroid (real acquisition date + cloud cover).
+    - `ndwi_score`: computed ONLY from real reflectance supplied via
+      ?green=&nir=; otherwise null with an explicit reason. No invented
+      band values, so this endpoint can never contradict ground evidence.
+    - ground evidence: why the zone would be queried at all -- billing
+      flags (live Isolation Forest when trained, stored rule otherwise)
+      and the NRW trend direction from the forecast model.
+    """
+    zone = db.query(Zone).filter(Zone.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail=f"Zone '{zone_id}' not found.")
+
+    centroid = satellite.LUCKNOW_ZONE_CENTROIDS.get(zone_id)
+    coordinates = (
+        SatelliteCoordinates(lat=centroid[0], lng=centroid[1])
+        if centroid else None
+    )
+
+    # --- ground evidence: billing flags (same ML/rule split as the audit) ---
+    billing_rows = (
+        db.query(BillingRecord).filter(BillingRecord.zone_id == zone_id).all()
+    )
+    detector = get_detector()
+    if billing_rows and detector is not None and detector.is_trained:
+        frame = pd.DataFrame([{
+            "billed_litres": r.billed_litres,
+            "benchmark_litres": r.benchmark_litres,
+            "household_size": r.household_size or 4,
+        } for r in billing_rows])
+        scores = detector.predict_anomaly(frame)
+        billing_flagged = int((scores >= FLAG_THRESHOLD).sum())
+        billing_method = "isolation_forest"
+    else:
+        billing_flagged = sum(1 for r in billing_rows if r.is_anomaly)
+        billing_method = "rule_fallback" if billing_rows else None
+
+    # --- ground evidence: NRW trend direction from the forecast model ---
+    trend = forecast(
+        load_zone_snapshots(db, zone_id),
+        tariff_rate=zone.tariff_rate or 0.005,
+        horizon_days=30,
+        zone_id=zone_id,
+    )
+    nrw_direction = trend.get("direction") if trend.get("is_sufficient") else None
+
+    flag_sources = []
+    if billing_flagged:
+        flag_sources.append("billing_anomaly")
+    if nrw_direction == "WORSENING":
+        flag_sources.append("nrw_trend_worsening")
+    zone_flagged = bool(flag_sources)
+
+    # --- NDWI: computed only from real supplied reflectance ---
+    ndwi_score = None
+    ndwi_status = "bands_not_configured"
+    anomaly_threshold = None
+    surface_anomaly = None
+    if green is not None and nir is not None:
+        ndwi_score = round(satellite.calculate_ndwi(green, nir), 4)
+        ndwi_status = "computed"
+        anomaly_threshold = satellite.ANOMALY_THRESHOLD
+        surface_anomaly = ndwi_score > satellite.ANOMALY_THRESHOLD
+
+    # --- live, free Sentinel-2 catalog query (degrades, never fakes) ---
+    status = "OK"
+    scene = None
+    message = None
+    if centroid is None:
+        status = "NO_COORDINATES"
+        message = "No centroid configured for this zone; Sentinel-2 query skipped."
+    else:
+        try:
+            scene = satellite.fetch_latest_sentinel2_scene(
+                centroid[0], centroid[1], days=days
+            )
+            if scene is None:
+                status = "NO_SCENE"
+                message = (
+                    f"No Sentinel-2 L2A scene in the last {days} days for this "
+                    f"location (catalog responded normally)."
+                )
+        except Exception as exc:  # offline, timeout, API change
+            status = "CATALOG_UNAVAILABLE"
+            message = (
+                f"Sentinel-2 catalog query failed ({type(exc).__name__}); "
+                f"no scene data is claimed rather than invented."
+            )
+
+    if ndwi_status == "bands_not_configured" and message is None:
+        message = (
+            "Catalog scene is available, but B03/B08 reflectance for this "
+            "deployment is not configured -- pass ?green=&nir= with values "
+            "read from the scene to compute NDWI. No score is invented "
+            "without them."
+        )
+
+    data_source = (
+        "Sentinel-2 L2A catalog via Element84 Earth Search (live, key-free)"
+        + (
+            "; NDWI from reflectance supplied via query parameters"
+            if ndwi_status == "computed" else ""
+        )
+    )
+
+    return {
+        "zone_id": zone_id,
+        "coordinates": coordinates,
+        "status": status,
+        "is_simulated": False,
+        "data_source": data_source,
+        "scene": SatelliteScene(**scene) if scene else None,
+        "ndwi_score": ndwi_score,
+        "ndwi_status": ndwi_status,
+        "anomaly_threshold": anomaly_threshold,
+        "surface_moisture_anomaly": surface_anomaly,
+        "zone_flagged": zone_flagged,
+        "flag_sources": flag_sources,
+        "billing_flagged_records": billing_flagged,
+        "billing_detection_method": billing_method,
+        "nrw_trend": nrw_direction,
+        "interpretation": (
+            "NDWI is a second opinion for zones already flagged by ground "
+            "signals; at 10 m resolution it only corroborates large, "
+            "sustained leaks, never small ones (roadmap 5.4)."
+        ),
+        "message": message,
+    }

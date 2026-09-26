@@ -102,6 +102,8 @@ Specific to this build:
 - **Zone, household and weekly trend data are synthetic**, anchored to the real city aggregate above; only the city-wide figures are published data.
 - **The ML models train on the demo dataset** (399 billing records, 13 weekly snapshots) at startup, and the anomaly thresholds were tuned against that same data (`backend/test/tune_thresholds.py`). Accuracy on a real utility's data will differ, and the model reports precision/recall rather than claiming perfection.
 - **The 30-day forecast is a linear trend** over 13 weeks of history and tests its own slope for significance; given noisy or short history it reports `STABLE` instead of inventing a direction.
+- **The Sentinel-2 NDWI check queries the real, free satellite catalog live** (`GET /data/satellite/ndwi/{zone_id}` returns a genuine Sentinel-2 acquisition — scene ID, date, cloud cover), but band reflectance (B03/B08) is not configured in this deployment, so `ndwi_score` comes back `null` with an explicit reason rather than a made-up index value. Where an NDWI score does appear it is computed from reflectance supplied via `?green=&nir=`, never simulated. At 10 m resolution it can only corroborate large, sustained leaks — never a small one (roadmap §5.4).
+- **Investigation-history notes ("previously flagged") are derived from the seeded findings themselves** — Isolation Forest flag counts and computed 4-week NRW rises — not hand-written incident stories.
 - **Graceful degradation, not magic:** without `GROQ_API_KEY` the Copilot falls back to a rule-based summary, and without Twilio credentials alerts are logged rather than sent.
 
 ---

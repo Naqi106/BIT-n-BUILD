@@ -147,15 +147,31 @@ def forecast(
     when there is not enough history, so the caller can show an explicit
     "not enough data" state instead of a fabricated number.
     """
+    label = zone_id or "the town"
+
     required = {"timestamp", "loss_litres", "nrw_percentage"}
-    if snapshots is None or not required.issubset(getattr(snapshots, "columns", set())):
+    if snapshots is None:
+        raise ValueError(f"forecast() requires columns {sorted(required)}")
+    if snapshots.empty or len(snapshots.columns) == 0:
+        # A zone with no snapshot history yet is a data-absence state, not
+        # malformed input -- report it honestly instead of raising (a zero-
+        # row load yields a column-less frame, which would otherwise trip
+        # the required-columns check below).
+        return {
+            "zone_id": zone_id,
+            "is_sufficient": False,
+            "observations": 0,
+            "required_observations": MIN_POINTS,
+            "message": (
+                f"{label}: no snapshots recorded yet — nothing to project a trend from."
+            ),
+        }
+    if not required.issubset(snapshots.columns):
         raise ValueError(f"forecast() requires columns {sorted(required)}")
 
     df = snapshots[list(required)].dropna().copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna().sort_values("timestamp").reset_index(drop=True)
-
-    label = zone_id or "the town"
 
     if len(df) < MIN_POINTS:
         return {
