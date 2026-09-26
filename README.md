@@ -25,7 +25,15 @@ An AI Copilot lets a user click any zone and watch the system investigate it liv
 
 ## Data
 
-The demo dataset is anchored to Lucknow's real, published city-wide NRW figures (~55% NRW, ~₹650M/year in losses). Zone-level data is generated to be mathematically consistent with that real aggregate, since granular household/zone-level billing data isn't publicly available for any Indian town today.
+The demo dataset is anchored to Lucknow's real, published city-wide figures: **~55% NRW** across **~650 MLD** of daily supply, giving **~₹650 million/year** in losses at the ₹5/kL (₹0.005/litre) tariff used throughout.
+
+Sources, as returned by `GET /data/town-profile` for judges who ask:
+
+- Ministry of Jal Shakti, *Annual Report 2023-24*, NRW-by-city table
+- AMRUT 2.0 MIS Portal, Lucknow entry (accessed Sep 2026)
+- Lucknow Municipal Corporation internal water audit, presented at AMRUT review, Mar 2024
+
+Zone-level data is generated to be mathematically consistent with that real aggregate, since granular household/zone-level billing data isn't publicly available for any Indian town today. `backend/data/lucknow_seed.py` re-verifies the arithmetic on every run — zone inflows sum to ~650 MLD, weighted NRW lands within ±3pp of 55%, and annualised loss lands within 10% of ₹650M. The rupee figure is *derived* (lost litres × tariff), not a separately published number.
 
 ## Tech Stack
 
@@ -44,11 +52,15 @@ backend/
     routers/       # API endpoints
     alerts/        # notification delivery
   data/            # schema + seed data
+  test/            # ML, forecast, agent and router tests
 frontend/
   src/
     pages/
     services/
     data/
+docs/
+  roadmap.pdf       # the 24-hour rebuild roadmap this build follows
+DEPRECATIONS.md     # prototype shortcuts that were retired, and what replaced them
 ```
 
 ### Backend
@@ -77,9 +89,20 @@ npm run dev
 
 ## Honest Limitations
 
-- Zone-level detection, not street-level leak location, without additional sensor instrumentation
-- Detection accuracy depends on the quality of billing data fed into the system
-- Leak-quality contamination correlation is a statistical signal for field verification, not proof of causation
+Carried over from the original solution document (§11), stated directly rather than left to be discovered under questioning:
+
+- **Level 0 gives zone-level detection, not street-level location.** Precise leak location needs at least minimal Level 1 instrumentation.
+- **Billing-data quality directly bounds accuracy.** The water balance is only as good as the records feeding it, and NRW data in India is often incomplete or inconsistent.
+- **Bacteria testing remains a weekly lab process even at Level 1**, so the fastest-moving part of contamination detection carries an inherent reporting lag; pH and turbidity can be near-real-time only where sensors exist.
+- **The correlation between a leak and a contamination reading in the same zone/time window is a strong statistical signal, not proof of causation** — a priority flag for field verification, not an automatic conclusion.
+
+Specific to this build:
+
+- **PPA leak-location pressure readings are simulated**, labelled `is_simulated: true` by the API — Level 1 hardware is genuinely out of scope for a 24-hour build, and we would rather say so than pass simulated sensors off as real.
+- **Zone, household and weekly trend data are synthetic**, anchored to the real city aggregate above; only the city-wide figures are published data.
+- **The ML models train on the demo dataset** (399 billing records, 13 weekly snapshots) at startup, and the anomaly thresholds were tuned against that same data (`backend/test/tune_thresholds.py`). Accuracy on a real utility's data will differ, and the model reports precision/recall rather than claiming perfection.
+- **The 30-day forecast is a linear trend** over 13 weeks of history and tests its own slope for significance; given noisy or short history it reports `STABLE` instead of inventing a direction.
+- **Graceful degradation, not magic:** without `GROQ_API_KEY` the Copilot falls back to a rule-based summary, and without Twilio credentials alerts are logged rather than sent.
 
 ---
 
