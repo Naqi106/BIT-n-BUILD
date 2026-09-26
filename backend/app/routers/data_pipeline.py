@@ -2,8 +2,11 @@
 DATA PIPELINE ROUTER -- Person 1 (Data + ML)
 
 Endpoints:
-  POST /data/upload-csv     -- bulk ingest of readings or billing data via CSV
-  GET  /data/town-profile   -- returns the real Lucknow anchor figures with source citation
+  POST /data/upload-csv               -- bulk ingest of readings or billing data via CSV
+  GET  /data/town-profile             -- returns the real Lucknow anchor figures with source citation
+  GET  /data/nrw-forecast{,/zone_id}  -- 30-day NRW trend projection (town or single zone)
+  GET  /data/investigations/{zone_id} -- "previously flagged" note + history (zone detail view)
+  POST /data/investigations/{zone_id} -- append an investigation note (officer / Copilot)
 
 CSV upload supports two file types (detected by column headers):
   1. readings  -- columns: zone_id, inflow_litres, timestamp
@@ -32,6 +35,11 @@ from backend.app.engines.trend_forecast import (
     forecast,
     load_town_snapshots,
     load_zone_snapshots,
+)
+from backend.app.engines.investigation_memory import (
+    get_zone_investigations,
+    previously_flagged_note,
+    record_investigation,
 )
 
 router = APIRouter(prefix="/data", tags=["Data Pipeline"])
@@ -86,6 +94,36 @@ class NRWForecast(BaseModel):
     nrw_slope_pp_per_day: Optional[float] = None
     nrw_r2: Optional[float] = None
     interpretation: Optional[str] = None
+
+
+class InvestigationEntry(BaseModel):
+    id: int
+    zone_id: str
+    summary: str
+    action_taken: Optional[str] = None
+    outcome: Optional[str] = None
+    timestamp: Optional[str] = None   # ISO-8601
+
+
+class InvestigationMemoryResponse(BaseModel):
+    """
+    The "previously flagged" banner + history for the zone detail view
+    (roadmap Hours 15-19). Zones with no history return
+    previously_flagged=False and note=None -- never a fabricated warning.
+    """
+    zone_id: str
+    previously_flagged: bool
+    note: Optional[str] = None
+    investigation_count: int = 0
+    last_flagged_at: Optional[str] = None
+    days_since_last: Optional[int] = None
+    entries: List[InvestigationEntry] = []
+
+
+class InvestigationCreate(BaseModel):
+    summary: str
+    action_taken: Optional[str] = None
+    outcome: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -316,4 +354,64 @@ def get_zone_nrw_forecast(
         tariff_rate=zone.tariff_rate or 0.005,
         horizon_days=horizon_days,
         zone_id=zone_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /data/investigations/{zone_id}
+# The "previously flagged" note for the zone detail view (Hours 15-19).
+# Person 4: render `note` as a banner; `entries` as the history list.
+# ---------------------------------------------------------------------------
+@router.get("/investigations/{zone_id}", response_model=InvestigationMemoryResponse)
+def get_zone_investigation_memory(
+    zone_id: str,
+    limit: int = Query(5, ge=1, le=50, description="Max history entries to return"),
+    db: Session = Depends(get_db),
+):
+    """
+    Persistent investigation history for a zone.
+
+    Returns the "previously flagged" banner text plus the underlying
+    entries (newest first). Never invents history: a zone that has never
+    been investigated returns previously_flagged=False, note=None.
+    """
+    if not db.query(Zone).filter(Zone.id == zone_id).first():
+        raise HTTPException(status_code=404, detail=f"Zone '{zone_id}' not found.")
+
+    flagged = previously_flagged_note(db, zone_id)
+    return {
+        "zone_id": zone_id,
+        "previously_flagged": flagged is not None,
+        "note": flagged["note"] if flagged else None,
+        "investigation_count": flagged["investigation_count"] if flagged else 0,
+        "last_flagged_at": flagged["last_flagged_at"] if flagged else None,
+        "days_since_last": flagged["days_since_last"] if flagged else None,
+        "entries": get_zone_investigations(db, zone_id, limit=limit),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /data/investigations/{zone_id}
+# Append a note after an investigation (officer button or Copilot run).
+# ---------------------------------------------------------------------------
+@router.post(
+    "/investigations/{zone_id}",
+    response_model=InvestigationEntry,
+    status_code=201,
+)
+def post_zone_investigation(
+    zone_id: str,
+    body: InvestigationCreate,
+    db: Session = Depends(get_db),
+):
+    """Record an investigation note so the next viewer sees the history."""
+    if not db.query(Zone).filter(Zone.id == zone_id).first():
+        raise HTTPException(status_code=404, detail=f"Zone '{zone_id}' not found.")
+
+    return record_investigation(
+        db,
+        zone_id,
+        summary=body.summary,
+        action_taken=body.action_taken,
+        outcome=body.outcome,
     )

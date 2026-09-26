@@ -26,13 +26,16 @@ import os
 import sys
 import random
 import argparse
+import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 # Add backend/ to path so imports resolve correctly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.app.db import SessionLocal, engine
-from backend.app.engines.ml_billing_anomaly import FALLBACK_RATIO
+from backend.app.engines.ml_billing_anomaly import (
+    FALLBACK_RATIO, FLAG_THRESHOLD, train_detector, get_detector,
+)
 from backend.data.db_schema import (
     init_db, Zone, RawReading, BillingRecord,
     NRWSnapshot, InvestigationMemory
@@ -230,15 +233,114 @@ def seed(clear_existing=False):
             print(f"OK - {total} NRW snapshots inserted.\n")
 
         # ----------------------------------------------------------------
+        # 5. Investigation memory -- history behind the zone detail view's
+        #    "previously flagged" note (roadmap Hours 15-19).
+        #    Every row is derived from findings actually stored above --
+        #    no hand-written incident stories.
+        # ----------------------------------------------------------------
+        existing_mem = db.query(InvestigationMemory).count()
+        if existing_mem > 0:
+            print(f"investigation_memory: {existing_mem} rows already present, skipping.\n")
+        else:
+            print("Inserting investigation memory...")
+            billing_rows = db.query(BillingRecord).all()
+            frame = pd.DataFrame([{
+                "billed_litres": r.billed_litres,
+                "benchmark_litres": r.benchmark_litres,
+                "household_size": r.household_size or 4,
+            } for r in billing_rows])
+
+            # Flag with the same detector the BillingAudit screen and the
+            # Copilot cite, so the banner's counts match the live audit.
+            # If training is unavailable, fall back to the stored rule column.
+            try:
+                train_detector(frame)
+                scores = get_detector().predict_anomaly(frame)
+                flagged = [bool(s) for s in scores >= FLAG_THRESHOLD]
+            except Exception:
+                flagged = [bool(r.is_anomaly) for r in billing_rows]
+
+            flagged_by_zone = {}
+            for rec, is_flag in zip(billing_rows, flagged):
+                if is_flag:
+                    flagged_by_zone.setdefault(rec.zone_id, []).append(rec)
+            # Only write memory for zones that still exist (orphan guard --
+            # test zones may have carried billing rows before cleanup).
+            registered = {z.id for z in db.query(Zone).all()}
+            flagged_by_zone = {
+                zid: recs for zid, recs in flagged_by_zone.items() if zid in registered
+            }
+
+            seeded = 0
+            for zone_id in sorted(flagged_by_zone):
+                recs = flagged_by_zone[zone_id]
+                households = {r.consumer_id for r in recs}
+                periods = sorted({r.billing_period for r in recs if r.billing_period})
+                unbilled = sum(
+                    max(0.0, float(r.benchmark_litres or 0) - float(r.billed_litres or 0))
+                    for r in recs
+                )
+                hh_n = len(households)
+                rec_n = len(recs)
+                period_text = f" ({', '.join(periods)})" if periods else ""
+                db.add(InvestigationMemory(
+                    zone_id=zone_id,
+                    summary=(
+                        f"Quarterly billing audit{period_text}: "
+                        f"{hh_n} household{'s' if hh_n != 1 else ''} flagged "
+                        f"({rec_n} record{'s' if rec_n != 1 else ''}, "
+                        f"~{unbilled / 1000:,.1f} kL unbilled) "
+                        f"billed far below benchmark."
+                    ),
+                    action_taken="Meter inspection assigned to the field team; consumers notified.",
+                    outcome="Pending field verification.",
+                    timestamp=now - timedelta(days=12),
+                ))
+                seeded += 1
+
+            # NRW trend reviews -- only where the stored snapshots show a
+            # material rise over the last 4 weeks (computed, not hardcoded).
+            for z in ZONES:
+                snaps = (
+                    db.query(NRWSnapshot)
+                    .filter(NRWSnapshot.zone_id == z["id"])
+                    .order_by(NRWSnapshot.timestamp.desc())
+                    .limit(8)
+                    .all()
+                )
+                if len(snaps) < 8:
+                    continue
+                recent = sum(s.nrw_percentage for s in snaps[:4]) / 4
+                prior = sum(s.nrw_percentage for s in snaps[4:8]) / 4
+                delta = recent - prior
+                if delta < 1.0:
+                    continue
+                db.add(InvestigationMemory(
+                    zone_id=z["id"],
+                    summary=(
+                        f"NRW trend review: zone NRW rose {delta:.1f} pp in 4 weeks "
+                        f"(from {prior:.1f}% to {recent:.1f}%) -- night-flow losses growing."
+                    ),
+                    action_taken="Leak-detection survey ordered along the trunk main.",
+                    outcome="Survey in progress.",
+                    timestamp=now - timedelta(days=5),
+                ))
+                seeded += 1
+
+            db.commit()
+            print(f"OK - {seeded} investigation memory rows inserted.\n")
+
+        # ----------------------------------------------------------------
         # Final counts
         # ----------------------------------------------------------------
         print("=" * 55)
         print("  SEED COMPLETE")
         print("=" * 55)
-        print(f"  zones            : {db.query(Zone).count()}")
-        print(f"  raw_readings     : {db.query(RawReading).count()}")
-        print(f"  billing_records  : {db.query(BillingRecord).count()}")
-        print(f"  nrw_snapshots    : {db.query(NRWSnapshot).count()}")
+        print(f"  zones                 : {db.query(Zone).count()}")
+        print(f"  raw_readings          : {db.query(RawReading).count()}")
+        print(f"  billing_records       : {db.query(BillingRecord).count()}")
+        print(f"  nrw_snapshots         : {db.query(NRWSnapshot).count()}")
+        print(f"  investigation_memory  : {db.query(InvestigationMemory).count()}")
         print("=" * 55)
 
     except Exception as e:

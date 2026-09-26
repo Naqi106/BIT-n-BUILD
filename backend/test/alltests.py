@@ -33,18 +33,22 @@ def setup_test_db():
             db.commit()
 
         yield
-
-        # --- teardown: delete the test zone and everything referencing it ---
-        # reversed(sorted_tables) removes children before their parents.
-        for table in reversed(Base.metadata.sorted_tables):
-            if "zone_id" in table.c:
-                db.execute(table.delete().where(table.c.zone_id == TEST_ZONE_ID))
-        db.execute(
-            Zone.__table__.delete().where(Zone.__table__.c.id == TEST_ZONE_ID)
-        )
-        db.commit()
     finally:
-        db.close()
+        # Teardown runs even when a test FAILS: cleanup placed after `yield`
+        # but outside `finally` is skipped on failure, which is how ZONE-TEST
+        # leaked back into the shared demo DB (with snapshots, alerts and
+        # actions) after an earlier cleanup pass.
+        try:
+            # reversed(sorted_tables) removes children before their parents.
+            for table in reversed(Base.metadata.sorted_tables):
+                if "zone_id" in table.c:
+                    db.execute(table.delete().where(table.c.zone_id == TEST_ZONE_ID))
+            db.execute(
+                Zone.__table__.delete().where(Zone.__table__.c.id == TEST_ZONE_ID)
+            )
+            db.commit()
+        finally:
+            db.close()
 
 def test_get_zones():
     res = client.get("/zones")
