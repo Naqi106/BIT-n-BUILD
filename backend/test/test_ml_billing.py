@@ -355,6 +355,58 @@ def test_scores_reproduce_across_independent_resample():
     assert precision >= 0.80, f"resample precision {precision:.2f} below tuned floor"
 
 
+def test_agent_tool_agrees_with_audit_endpoint():
+    """
+    The AI Copilot cites run_billing_anomaly(); judges compare that number
+    against GET /audit/billing/{zone_id} on the BillingAudit screen. Both
+    must run the same model at the same threshold or the demo contradicts
+    itself. (Found after Person 3's agent landed reading the static rule
+    columns instead — 22 vs 32 flagged on zone_2.)
+    """
+    from fastapi.testclient import TestClient
+    from backend.app.agent.tools import run_billing_anomaly
+    from backend.app.main import app
+
+    # Train exactly as app startup does, so both paths see one model
+    mba.train_detector(_load_seeded_billing())
+    client = TestClient(app)
+
+    for zone_id, expect_flags in (("zone_2", True), ("zone_8", False)):
+        tool = run_billing_anomaly(zone_id)
+        audit = client.get(f"/audit/billing/{zone_id}").json()
+
+        assert tool["status"] == "SUCCESS"
+        assert tool["detection_method"] == "isolation_forest"
+        assert tool["anomaly_count"] == audit["total_anomalies"], (
+            f"{zone_id}: Copilot says {tool['anomaly_count']}, "
+            f"audit endpoint says {audit['total_anomalies']}"
+        )
+        assert tool["total_accounts_audited"] == audit["total_records"]
+
+        if audit["total_anomalies"]:
+            # Highest-scoring household must be the same in both
+            assert tool["top_suspicious_consumer_ids"][0] == audit["items"][0]["consumer_id"]
+        if expect_flags:
+            assert tool["anomaly_count"] > 0
+        else:
+            assert tool["anomaly_count"] == 0, "clean zone flagged by one path only"
+
+
+def test_agent_tool_falls_back_to_rule_when_model_untrained():
+    """Untrained model => stored rule column, clearly labelled as fallback."""
+    from backend.app.agent.tools import run_billing_anomaly
+
+    saved = mba._detector
+    mba._detector = None
+    try:
+        tool = run_billing_anomaly("zone_2")
+        assert tool["status"] == "SUCCESS"
+        assert tool["detection_method"] == "rule_fallback"
+        assert tool["anomaly_count"] >= 0
+    finally:
+        mba._detector = saved
+
+
 def test_tuned_constants_are_documented_and_sane():
     """Guards the sweep table in ml_billing_anomaly.py against silent edits."""
     assert mba.MODERATE_THRESHOLD < mba.FLAG_THRESHOLD < 1.0

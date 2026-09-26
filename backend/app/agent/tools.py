@@ -13,6 +13,7 @@ Rules:
 """
 
 from typing import Optional, Dict, Any, List
+import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -23,6 +24,7 @@ from backend.app.engines.latias import (
     mnf_loss_estimate,
     unavoidable_annual_real_losses,
 )
+from backend.app.engines.ml_billing_anomaly import FLAG_THRESHOLD, get_detector
 from backend.app.routers.audit import get_ppa_leak_location
 
 
@@ -334,7 +336,13 @@ def run_billing_anomaly(
 ) -> Dict[str, Any]:
     """
     Audits consumer billing records for suspicious consumption anomalies.
-    Queries BillingRecord table directly and aggregates findings.
+
+    Primary path : live Isolation Forest scoring, identical to
+                   GET /audit/billing/{zone_id}, so the Copilot's citation
+                   and the BillingAudit screen never disagree.
+    Fallback path: the stored rule column written at ingest time
+                   (billed < 60% of benchmark) when the model is not trained.
+    The path actually used is reported as `detection_method`.
     """
     managed_session = False
     if db is None:
@@ -353,6 +361,7 @@ def run_billing_anomaly(
                 "anomaly_rate_pct": 0.0,
                 "estimated_unbilled_litres": 0.0,
                 "top_suspicious_consumer_ids": [],
+                "detection_method": None,
                 "status": "NO_DATA",
             }
 
@@ -367,23 +376,46 @@ def run_billing_anomaly(
                 "anomaly_rate_pct": 0.0,
                 "estimated_unbilled_litres": 0.0,
                 "top_suspicious_consumer_ids": [],
+                "detection_method": None,
                 "status": "NO_DATA",
             }
 
-        anomalous_records = (
-            query.filter(BillingRecord.is_anomaly == True)
-            .order_by(BillingRecord.anomaly_score.desc())
-            .all()
-        )
-        anomaly_count = len(anomalous_records)
+        records = query.order_by(BillingRecord.id).all()
+        detector = get_detector()
+
+        if detector is not None and detector.is_trained:
+            # Live ML path — re-scored on every call, same model and same
+            # FLAG_THRESHOLD the audit endpoint uses.
+            frame = pd.DataFrame([{
+                "billed_litres": r.billed_litres,
+                "benchmark_litres": r.benchmark_litres,
+                "household_size": r.household_size or 4,
+            } for r in records])
+            scores = detector.predict_anomaly(frame)
+            detection_method = "isolation_forest"
+            flagged = sorted(
+                ((r, float(s)) for r, s in zip(records, scores)
+                 if s >= FLAG_THRESHOLD),
+                key=lambda item: -item[1],
+            )
+        else:
+            # Documented no-ML fallback (stored rule column from ingest)
+            detection_method = "rule_fallback"
+            flagged = sorted(
+                ((r, float(r.anomaly_score or 0.0)) for r in records
+                 if r.is_anomaly),
+                key=lambda item: -item[1],
+            )
+
+        anomaly_count = len(flagged)
         anomaly_rate_pct = round((anomaly_count / total_records) * 100.0, 2)
 
         estimated_unbilled = sum(
             max(0.0, float(r.benchmark_litres or 0.0) - float(r.billed_litres or 0.0))
-            for r in anomalous_records
+            for r, _ in flagged
         )
 
-        top_consumers = [str(r.consumer_id) for r in anomalous_records[:5]]
+        top_consumers = [str(r.consumer_id) for r, _ in flagged[:5]]
 
         return {
             "zone_id": zone_id,
@@ -392,6 +424,7 @@ def run_billing_anomaly(
             "anomaly_rate_pct": anomaly_rate_pct,
             "estimated_unbilled_litres": round(estimated_unbilled, 2),
             "top_suspicious_consumer_ids": top_consumers,
+            "detection_method": detection_method,
             "status": "SUCCESS",
         }
     except Exception as e:
@@ -402,6 +435,7 @@ def run_billing_anomaly(
             "anomaly_rate_pct": 0.0,
             "estimated_unbilled_litres": 0.0,
             "top_suspicious_consumer_ids": [],
+            "detection_method": None,
             "status": "ERROR",
             "error": str(e),
         }
