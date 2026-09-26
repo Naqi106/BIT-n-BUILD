@@ -34,8 +34,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
 
 app = FastAPI(
-    title="fp-26-44:  -  NRW Platform",
-    description="Backend API for water balance0.7_loss,24h_monitoring, billing fraud, and_AI_recommendations.",
+    title="AltoMare Non-Revenue Water Platform API",
+    description="Backend API for water balance audits, MNF estimation, billing fraud, and payback ROI.",
     version="2.0.0",
     lifespan=lifespan
 )
