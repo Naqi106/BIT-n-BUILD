@@ -60,6 +60,26 @@ def setup_db():
         db.commit()
     db.close()
     yield
+    # Teardown: this file runs against the SHARED demo DB, so remove every
+    # row its tests create. The conftest session-end sweep stays as a
+    # backstop, but the leaks should die at the source -- every test in this
+    # file creates its own rows and must not rely on leftovers from a
+    # previous test.
+    db = SessionLocal()
+    try:
+        test_zone_ids = ["ZONE-AGENT-TEST", "ZONE-AGENT-TEST-2", "ZONE-NO-MEM"]
+        db.query(InvestigationMemory).filter(
+            InvestigationMemory.zone_id.in_(test_zone_ids)
+        ).delete(synchronize_session=False)
+        db.query(ActionLog).filter(
+            ActionLog.zone_id.in_(test_zone_ids)
+        ).delete(synchronize_session=False)
+        db.query(Zone).filter(
+            Zone.id.in_(test_zone_ids)
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
 
 
 @pytest.fixture()

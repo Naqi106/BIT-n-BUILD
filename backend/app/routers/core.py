@@ -61,13 +61,30 @@ def trigger_detection(zone_id: str, db: Session = Depends(get_db)):
     has_real_reading = latest_reading is not None
     inflow = latest_reading.inflow_litres if has_real_reading else 100000.0
     night_flow = latest_reading.night_flow_litres if has_real_reading else None
-
-    billed_sum = db.query(func.sum(BillingRecord.billed_litres)).filter(BillingRecord.zone_id == zone_id).scalar()
-    has_real_billing = billed_sum is not None
-    billed_litres = billed_sum if has_real_billing else (inflow * 0.45)
     readings_count = db.query(RawReading).filter(RawReading.zone_id == zone_id).count()
 
-    is_fallback = not (has_real_reading and has_real_billing)
+    # Prefer the zone's latest weekly balance snapshot -- the same rows the
+    # Dashboard, the trend chart and the Copilot agent read. The legacy path
+    # below compares daily inflow against the household billing SAMPLE,
+    # which overstated loss severalfold and tripped is_leak_detected on
+    # every zone (a stray /detect call would have written bogus alerts).
+    snapshot = (
+        db.query(NRWSnapshot)
+        .filter(NRWSnapshot.zone_id == zone_id)
+        .order_by(NRWSnapshot.timestamp.desc())
+        .first()
+    )
+    if snapshot is not None and float(snapshot.inflow_litres or 0.0) > 0:
+        inflow = float(snapshot.inflow_litres)
+        billed_litres = float(snapshot.billed_litres)
+        is_fallback = False
+        data_source = "WEEKLY_SNAPSHOT"
+    else:
+        billed_sum = db.query(func.sum(BillingRecord.billed_litres)).filter(BillingRecord.zone_id == zone_id).scalar()
+        has_real_billing = billed_sum is not None
+        billed_litres = billed_sum if has_real_billing else (inflow * 0.45)
+        is_fallback = not (has_real_reading and has_real_billing)
+        data_source = "DEFAULT_FALLBACK" if is_fallback else "TELEMETRY"
 
     result = process_zone(
         zone_id=zone_id,
@@ -81,7 +98,7 @@ def trigger_detection(zone_id: str, db: Session = Depends(get_db)):
     )
 
     result["is_simulated"] = is_fallback
-    result["data_source"] = "DEFAULT_FALLBACK" if is_fallback else "TELEMETRY"
+    result["data_source"] = data_source
 
     if is_fallback:
         result["details"] = f"[DEFAULT FALLBACK DATA - NOT REAL TELEMETRY] {result['details']}"
