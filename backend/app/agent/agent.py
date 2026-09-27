@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from .schemas import AgentInvestigation, InvestigationRequest, EvidenceItem, Recommendation
 from .fallback import build_fallback_investigation
 from .prompts import SYSTEM_PROMPT
+from .memory import get_zone_memory, build_memory_context_block
 from .tools import (
     run_water_balance,
     run_mnf,
@@ -245,10 +246,29 @@ async def investigate(
                 summary=f"AI client initialization failed: {str(e)[:150]}",
             )
 
+    # ------------------------------------------------------------------
+    # Optional: load historical memory context for this zone
+    # Memory retrieval failure must never crash the agent.
+    # ------------------------------------------------------------------
+    memory_context_block = ""
+    if db is not None:
+        try:
+            past_memories = get_zone_memory(db, zone_id=zone_id, limit=3)
+            memory_context_block = build_memory_context_block(past_memories)
+            if memory_context_block:
+                logger.info("Injected %d memory entries for zone %s", len(past_memories), zone_id)
+        except Exception as mem_err:
+            logger.warning(
+                "Failed to retrieve investigation memory for zone %s: %s. Continuing without memory.",
+                zone_id, str(mem_err)
+            )
+
     system_instruction = f"""{SYSTEM_PROMPT}
 
 You are investigating zone '{zone_id}'.
 User inquiry: "{question}"
+
+{memory_context_block}
 
 Use your analytical tools to inspect the zone before formulating recommendations.
 Rules for final output:

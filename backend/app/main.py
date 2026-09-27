@@ -5,7 +5,7 @@ import pandas as pd
 
 from backend.app.db import SessionLocal
 from backend.data.db_schema import init_db, BillingRecord
-from backend.app.routers import core, audit, actions, data_pipeline
+from backend.app.routers import core, audit, actions, data_pipeline, agent as agent_router
 from backend.app.engines.ml_billing_anomaly import train_detector
 
 @asynccontextmanager
@@ -54,6 +54,7 @@ app.include_router(core.router)
 app.include_router(audit.router)
 app.include_router(actions.router)
 app.include_router(data_pipeline.router)  # Person 1 — CSV upload + town profile
+app.include_router(agent_router.router)   # Person 3 — AI Copilot Agent
 
 @app.get("/")
 def root():
