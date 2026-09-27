@@ -1,0 +1,24 @@
+# Render Blueprint — deploys the AltoMare FastAPI backend as a free web service.
+# One-time setup: render.com → New + → Blueprint → pick this repo.
+# Render detects this file and prompts for the two secret env vars (sync: false);
+# their values live in backend/.env, which is gitignored and never uploaded.
+services:
+  - type: web
+    name: altomare-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    # Must bind 0.0.0.0 and $PORT (Render routes traffic to the port it assigns).
+    startCommand: python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Supabase Postgres pooler connection string (port 6543) — same DB the
+      # local dev server uses, so judges see the curated demo data.
+      - key: DATABASE_URL
+        sync: false
+      # Groq key powering the copilot's investigation calls.
+      - key: GROQ_API_KEY
+        sync: false
+      # Optional: Twilio WhatsApp creds. Omit and notifications stay on the
+      # documented mock fallback (see README → WhatsApp).

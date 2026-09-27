@@ -124,6 +124,20 @@ npm run typecheck     # tsc --noEmit
 npm run build         # production build
 ```
 
+## 🚀 Deployment
+
+Free-tier hosting: **Vercel** serves the static frontend, **Render** runs the
+FastAPI backend (Blueprint via [`render.yaml`](render.yaml)), both connected to
+the shared Supabase Postgres — so the deployed site shows the same curated demo
+data as `localhost`. One-time setup takes ~15 minutes:
+**[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
+- Pushing to `main` redeploys both services automatically.
+- Render free tier sleeps after ~15 min idle: the first API call then takes
+  ~40–60 s (open `/health` once to wake it before a demo).
+- The deployed app mutates the **same demo database** as localhost — the
+  pristine-state rules in [DEMO_VIDEO.md](DEMO_VIDEO.md) apply to live clicks too.
+
 ## Honest Limitations
 
 Carried over from the original solution document (§11), stated directly rather than left to be discovered under questioning:
