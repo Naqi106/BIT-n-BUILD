@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, RefreshCw, Search, Send, ChevronDown, ChevronUp, Shield } from 'lucide-react'
+import { AlertTriangle, RefreshCw, Search, Send, ChevronDown, ChevronUp, Shield, Play, Radar } from 'lucide-react'
 import * as api from '../lib/api'
 import { useStore } from '../lib/store'
 import {
@@ -44,8 +44,29 @@ export default function AlertsPage() {
     const [expanded, setExpanded] = useState<number | null>(null)
     const [dispatchFor, setDispatchFor] = useState<api.LeakAlert | null>(null)
     const [toast, setToast] = useState<string | null>(null)
+    const [detectZone, setDetectZone] = useState('')
+    const [detecting, setDetecting] = useState(false)
+    const [detectResult, setDetectResult] = useState<api.DetectResult | null>(null)
+    const [detectError, setDetectError] = useState<string | null>(null)
 
     const zoneById = useMemo(() => new Map(zones.map((z) => [z.id, z])), [zones])
+    const activeDetectZone = detectZone || zones[0]?.id || ''
+
+    const runDetect = async () => {
+        if (!activeDetectZone) return
+        setDetecting(true)
+        setDetectError(null)
+        setDetectResult(null)
+        try {
+            const res = await api.runDetection(activeDetectZone)
+            setDetectResult(res)
+            if (res.is_leak_detected) refresh() // new row just landed in leak_alert
+        } catch (e) {
+            setDetectError((e as Error).message)
+        } finally {
+            setDetecting(false)
+        }
+    }
 
     const counts = useMemo(() => {
         const c: Record<string, number> = {}
@@ -78,6 +99,45 @@ export default function AlertsPage() {
 
     return (
         <div className="space-y-6">
+            {/* -------------------------------------------- run detection */}
+            <div className="bg-white/80 backdrop-blur-md px-4 py-3 rounded-xl border border-[#dad6cb] shadow-sm flex flex-wrap items-center gap-3">
+                <Radar className={`w-4 h-4 ${detecting ? 'text-amber-600 animate-spin' : 'text-stone-600'}`} />
+                <span className="text-xs font-semibold text-stone-800">Run Detection</span>
+                <select
+                    value={activeDetectZone}
+                    onChange={(e) => setDetectZone(e.target.value)}
+                    className="px-3 py-1.5 bg-white border border-[#dad6cb] rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-stone-400"
+                >
+                    {zones.map((z) => (
+                        <option key={z.id} value={z.id}>
+                            {z.name} ({z.id})
+                        </option>
+                    ))}
+                </select>
+                <button
+                    onClick={runDetect}
+                    disabled={detecting || !activeDetectZone}
+                    className="inline-flex items-center space-x-1.5 bg-[#1c1917] hover:bg-stone-800 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                >
+                    <Play className="w-3 h-3" />
+                    <span>{detecting ? 'Running…' : 'Run Detection'}</span>
+                </button>
+                <span className="text-[10px] text-stone-400">
+                    POST /detect · verdict computed from the zone's latest weekly snapshot · each
+                    positive run files a new alert
+                </span>
+            </div>
+
+            {detectError && <ErrorState error={detectError} onRetry={runDetect} />}
+
+            {detectResult && (
+                <DetectVerdict
+                    result={detectResult}
+                    zoneName={zoneById.get(detectResult.zone_id)?.name || detectResult.zone_id}
+                    onDismiss={() => setDetectResult(null)}
+                />
+            )}
+
             {/* severity pills + search */}
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center space-x-3">
@@ -356,5 +416,105 @@ function DispatchModal({
             </Field>
             {err && <div className="text-[11px] text-rose-700">{err}</div>}
         </Modal>
+    )
+}
+
+/* ------------------------------------------------- detection verdict */
+
+function DetectVerdict({
+    result,
+    zoneName,
+    onDismiss,
+}: {
+    result: api.DetectResult
+    zoneName: string
+    onDismiss: () => void
+}) {
+    const detected = result.is_leak_detected
+    const dismissBtn = (
+        <button
+            onClick={onDismiss}
+            title="Dismiss"
+            className={`font-bold ${detected ? 'text-rose-400 hover:text-rose-700' : 'text-emerald-400 hover:text-emerald-700'}`}
+        >
+            ✕
+        </button>
+    )
+
+    const stats = [
+        { label: 'NRW', value: fmtPct(result.nrw_percentage) },
+        {
+            label: 'Water-balance loss',
+            value: `${fmtML(result.total_water_balance_loss)} L`,
+        },
+        { label: 'UARL baseline', value: `${fmtML(result.uarl_baseline_litres)} L/day` },
+        { label: 'Confidence', value: fmtPct(result.confidence_score * 100) },
+    ]
+
+    if (!detected) {
+        return (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-emerald-800">
+                        No leak detected — {zoneName}
+                    </span>
+                    {dismissBtn}
+                </div>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                    {stats.map((s) => (
+                        <div key={s.label} className="p-2 rounded-lg bg-white/70 border border-emerald-100">
+                            <div className="text-[9px] uppercase tracking-wider text-emerald-700 font-semibold">
+                                {s.label}
+                            </div>
+                            <div className="font-bold text-stone-800">{s.value}</div>
+                        </div>
+                    ))}
+                </div>
+                <p className="text-emerald-800 leading-relaxed">
+                    Water-balance loss is within the UARL baseline, so the engine found no
+                    actionable loss and <strong>no alert was filed</strong>.
+                </p>
+                <div className="text-[10px] text-stone-500">
+                    methods: {result.detection_methods} · data_source: {result.data_source || '—'}
+                </div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-rose-800 flex items-center space-x-2">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>
+                        Leak detected — {zoneName}
+                        {result.alert_id ? ` · ALT-${result.alert_id} filed` : ''}
+                    </span>
+                </span>
+                <span className="flex items-center space-x-2">
+                    <Pill className={severityClass(result.severity)}>{result.severity}</Pill>
+                    {dismissBtn}
+                </span>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                {stats.map((s) => (
+                    <div key={s.label} className="p-2 rounded-lg bg-white/70 border border-rose-100">
+                        <div className="text-[9px] uppercase tracking-wider text-rose-600 font-semibold">
+                            {s.label}
+                        </div>
+                        <div className="font-bold text-stone-800">{s.value}</div>
+                    </div>
+                ))}
+            </div>
+            <p className="text-rose-700 leading-relaxed">{result.details}</p>
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-stone-500">
+                <Pill className="bg-stone-200 text-stone-700">{result.detection_methods}</Pill>
+                <span>
+                    actionable loss {fmtML(result.estimated_loss_litres)} L · data_source{' '}
+                    {result.data_source || '—'}
+                    {result.is_simulated ? ' (simulated input)' : ''}
+                </span>
+            </div>
+        </div>
     )
 }

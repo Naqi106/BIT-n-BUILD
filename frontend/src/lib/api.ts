@@ -274,6 +274,22 @@ export interface CSVUploadResult {
     warnings: string[]
 }
 
+export interface DetectResult {
+    zone_id: string
+    is_leak_detected: boolean
+    estimated_loss_litres: number
+    total_water_balance_loss: number
+    uarl_baseline_litres: number
+    nrw_percentage: number
+    severity: string
+    confidence_score: number
+    detection_methods: string
+    details: string
+    is_simulated?: boolean
+    data_source?: string
+    alert_id?: number
+}
+
 export interface ActionCreatePayload {
     zone_id: string
     alert_id?: number | null
@@ -333,6 +349,10 @@ export const getInvestigations = (zoneId: string) =>
 export const getMemory = (zoneId: string) =>
     request<AgentMemoryItem[]>(`/agent/memory/${zoneId}`)
 export const getOpenAPI = () => request<Record<string, unknown>>('/openapi.json')
+
+/** POST /detect/{zone_id} — runs the Latias multi-method engine; files a
+ *  leak_alert row when the verdict is positive (each run files one). */
+export const runDetection = (zoneId: string) => post<DetectResult>(`/detect/${zoneId}`)
 
 /* ------------------------------------------------------------------ POSTs */
 
