@@ -53,11 +53,12 @@ backend/
     alerts/        # notification delivery
   data/            # schema + seed data
   test/            # ML, forecast, agent and router tests
-frontend/
+frontend/            # Vite + React + TypeScript SPA (all screens, live API data)
   src/
-    pages/
-    services/
-    data/
+    pages/           # one file per screen (Dashboard, Alerts, Copilot, ...)
+    components/      # layout shell, charts, UI primitives
+    lib/             # typed API client, formatters, derivations
+  smoke/             # jsdom render smoke (mounts every route live)
 docs/
   roadmap.pdf       # the 24-hour rebuild roadmap this build follows
 DEPRECATIONS.md     # prototype shortcuts that were retired, and what replaced them
@@ -80,11 +81,25 @@ cp .env.example .env
 
 # Start the backend
 python -m uvicorn backend.app.main:app --reload
+```
 
-# Frontend
+### Frontend
+
+The frontend calls the backend directly (the API allows all origins), so no
+proxy configuration is required. Override the API URL at build time with
+`VITE_API_BASE` if the backend is not on `http://127.0.0.1:8000`.
+
+```bash
+# From the repository root
 cd frontend
 npm install
+
+# Start the dev server (http://localhost:5173)
 npm run dev
+
+# Checks used before pushing
+npm run typecheck     # tsc --noEmit
+npm run build         # production build
 ```
 
 ## Honest Limitations

@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 node_modules/
 dist/
+smoke-dist/
+smoke-result.txt
+smoke-err.txt
 .DS_Store
 *.log
 venv/
