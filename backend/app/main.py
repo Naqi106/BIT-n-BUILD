@@ -65,6 +65,11 @@ def root():
         "docs": "/docs"
     }
 
+@app.get("/health")
+def health():
+    """Liveness probe for monitors and tooling (static — cannot flake)."""
+    return {"status": "ok", "service": "altomare-api", "version": "2.0.0"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.app.main:app", host="127.0.0.1", port=8000, reload=True)
