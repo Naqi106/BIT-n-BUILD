@@ -130,6 +130,9 @@ data as `localhost`. One-time setup takes ~15 minutes: `render.yaml` defines
 the backend service (build, `$PORT`, `/health`), and the frontend builds with
 `VITE_API_BASE` pointed at the Render URL.
 
+**🌐 Live frontend:** https://bit-n-build-tawny.vercel.app
+(Vercel production; rebuilds automatically from `main`)
+
 - Pushing to `main` redeploys both services automatically.
 - Render free tier sleeps after ~15 min idle: the first API call then takes
   ~40–60 s (open `/health` once to wake it before a demo).
