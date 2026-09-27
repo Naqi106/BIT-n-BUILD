@@ -59,8 +59,6 @@ frontend/            # Vite + React + TypeScript SPA (all screens, live API data
     components/      # layout shell, charts, UI primitives
     lib/             # typed API client, formatters, derivations
   smoke/             # jsdom render smoke (mounts every route live)
-docs/
-  DEPLOY.md         # Render + Vercel deployment guide
 ```
 
 ### Backend
@@ -128,8 +126,9 @@ npm run build         # production build
 Free-tier hosting: **Vercel** serves the static frontend, **Render** runs the
 FastAPI backend (Blueprint via [`render.yaml`](render.yaml)), both connected to
 the shared Supabase Postgres — so the deployed site shows the same curated demo
-data as `localhost`. One-time setup takes ~15 minutes:
-**[docs/DEPLOY.md](docs/DEPLOY.md)**.
+data as `localhost`. One-time setup takes ~15 minutes: `render.yaml` defines
+the backend service (build, `$PORT`, `/health`), and the frontend builds with
+`VITE_API_BASE` pointed at the Render URL.
 
 - Pushing to `main` redeploys both services automatically.
 - Render free tier sleeps after ~15 min idle: the first API call then takes

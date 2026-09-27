@@ -14,7 +14,8 @@ venv/
 *.sqlite3
 build/
 
-# Local-only docs — never pushed (demo runbook, internal notes, roadmap)
+# Local-only docs — never pushed (demo runbook, internal notes, roadmap, deploy guide)
 DEMO_VIDEO.md
 DEPRECATIONS.md
 docs/roadmap.pdf
+docs/DEPLOY.md
