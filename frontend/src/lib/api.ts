@@ -354,6 +354,21 @@ export const getOpenAPI = () => request<Record<string, unknown>>('/openapi.json'
  *  leak_alert row when the verdict is positive (each run files one). */
 export const runDetection = (zoneId: string) => post<DetectResult>(`/detect/${zoneId}`)
 
+export interface NotifyResult {
+    status: string
+    alert_id: number
+    channel: string
+    message: string
+    twilio_sid?: string
+}
+
+/** POST /alerts/notify — WhatsApp/SMS to field staff via Twilio; returns
+ *  "sent" (+SID), "mock_sent …" without credentials, or "failed (…)". */
+export const notifyFieldTeam = (
+    alertId: number,
+    channel: 'whatsapp' | 'sms' = 'whatsapp',
+) => post<NotifyResult>('/alerts/notify', { alert_id: alertId, channel })
+
 /* ------------------------------------------------------------------ POSTs */
 
 export const agentInvestigate = (zone_id: string, question: string) =>

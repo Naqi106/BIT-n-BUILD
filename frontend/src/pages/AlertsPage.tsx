@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, RefreshCw, Search, Send, ChevronDown, ChevronUp, Shield, Play, Radar } from 'lucide-react'
+import { AlertTriangle, RefreshCw, Search, Send, ChevronDown, ChevronUp, Shield, Play, Radar, MessageCircle } from 'lucide-react'
 import * as api from '../lib/api'
 import { useStore } from '../lib/store'
 import {
@@ -48,6 +48,7 @@ export default function AlertsPage() {
     const [detecting, setDetecting] = useState(false)
     const [detectResult, setDetectResult] = useState<api.DetectResult | null>(null)
     const [detectError, setDetectError] = useState<string | null>(null)
+    const [notifyBusy, setNotifyBusy] = useState<number | null>(null)
 
     const zoneById = useMemo(() => new Map(zones.map((z) => [z.id, z])), [zones])
     const activeDetectZone = detectZone || zones[0]?.id || ''
@@ -65,6 +66,25 @@ export default function AlertsPage() {
             setDetectError((e as Error).message)
         } finally {
             setDetecting(false)
+        }
+    }
+
+    const sendNotify = async (a: api.LeakAlert) => {
+        setNotifyBusy(a.id)
+        try {
+            const res = await api.notifyFieldTeam(a.id, 'whatsapp')
+            if (res.status === 'sent') {
+                setToast(`WhatsApp delivered to field staff ✓ ${res.twilio_sid || ''}`)
+            } else if (res.status.startsWith('mock_sent')) {
+                setToast('MOCK — Twilio not configured: message logged, not sent.')
+            } else {
+                // send_alert() reports failures in-band instead of crashing
+                setToast(`WhatsApp ${res.status}`)
+            }
+        } catch (e) {
+            setToast(`WhatsApp failed: ${(e as Error).message}`)
+        } finally {
+            setNotifyBusy(null)
         }
     }
 
@@ -248,16 +268,30 @@ export default function AlertsPage() {
                                                 <StatusPill status={a.status} />
                                             </td>
                                             <td className="p-3 text-right">
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation()
-                                                        setDispatchFor(a)
-                                                    }}
-                                                    className="inline-flex items-center space-x-1 px-3 py-1.5 bg-[#1c1917] hover:bg-stone-800 text-white text-[11px] font-medium rounded-lg transition-all"
-                                                >
-                                                    <Send className="w-3 h-3" />
-                                                    <span>Dispatch Team</span>
-                                                </button>
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            sendNotify(a)
+                                                        }}
+                                                        disabled={notifyBusy === a.id}
+                                                        title="Send this alert to field staff via WhatsApp (Twilio)"
+                                                        className="inline-flex items-center space-x-1 px-3 py-1.5 bg-white hover:bg-[#f3f0e8] border border-[#dad6cb] text-stone-700 text-[11px] font-medium rounded-lg transition-all disabled:opacity-50"
+                                                    >
+                                                        <MessageCircle className="w-3 h-3" />
+                                                        <span>{notifyBusy === a.id ? 'Sending…' : 'WhatsApp'}</span>
+                                                    </button>
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            setDispatchFor(a)
+                                                        }}
+                                                        className="inline-flex items-center space-x-1 px-3 py-1.5 bg-[#1c1917] hover:bg-stone-800 text-white text-[11px] font-medium rounded-lg transition-all"
+                                                    >
+                                                        <Send className="w-3 h-3" />
+                                                        <span>Dispatch Team</span>
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                         {isOpen && a.details && (

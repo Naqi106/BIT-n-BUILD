@@ -66,6 +66,11 @@ class ActionUpdateStatus(BaseModel):
     status: str = Field(..., description="APPROVED, REJECTED, or RESOLVED")
     officer_notes: Optional[str] = None
 
+class AlertNotifyCreate(BaseModel):
+    """POST /alerts/notify — WhatsApp/SMS delivery to field staff."""
+    alert_id: int
+    channel: str = Field("whatsapp", pattern="^(whatsapp|sms)$")
+
 class ActionResponse(BaseModel):
     id: int
     zone_id: str

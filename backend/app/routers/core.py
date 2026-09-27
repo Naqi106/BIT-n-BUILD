@@ -8,10 +8,12 @@ from backend.app.db import get_db
 from backend.data.db_schema import Zone, RawReading, LeakAlert, BillingRecord, RevenueLog, NRWSnapshot
 from backend.app.models import (
     ZoneResponse, ZoneCreate, ReadingCreate, ReadingResponse,
-    LeakAlertResponse, PaybackResponse, RevenueLogResponse, NRWSnapshotResponse
+    LeakAlertResponse, PaybackResponse, RevenueLogResponse, NRWSnapshotResponse,
+    AlertNotifyCreate
 )
 from backend.app.engines.latias import process_zone
 from backend.app.engines.revenue import calculate_payback_period
+from backend.app.alerts.notify import send_alert, format_alert_message, alert_message_variables
 
 router = APIRouter(tags=["Core Operations"])
 
@@ -126,6 +128,33 @@ def get_alerts(zone_id: Optional[str] = None, db: Session = Depends(get_db)):
     if zone_id:
         query = query.filter(LeakAlert.zone_id == zone_id)
     return query.order_by(LeakAlert.timestamp.desc()).all()
+
+@router.post("/alerts/notify", response_model=Dict[str, Any])
+def notify_field_team(payload: AlertNotifyCreate, db: Session = Depends(get_db)):
+    """POST /alerts/notify (Roadmap Hour 8) — WhatsApp/SMS to field staff.
+
+    Real Twilio delivery when credentials are set in .env; the documented
+    mock fallback otherwise. Never crashes the request either way.
+    """
+    alert = db.query(LeakAlert).filter(LeakAlert.id == payload.alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+
+    zone = db.query(Zone).filter(Zone.id == alert.zone_id).first()
+    alert_fields = {
+        "zone_id": alert.zone_id,
+        "zone_name": zone.name if zone else None,
+        "severity": alert.severity,
+        "estimated_loss_litres": alert.estimated_loss_litres,
+        "confidence_score": alert.confidence_score,
+        "method": alert.detection_methods,
+    }
+    return send_alert(
+        alert_id=alert.id,
+        message=format_alert_message(alert_fields),
+        channel=payload.channel,
+        variables=alert_message_variables(alert_fields),
+    )
 
 @router.get("/revenue/payback/{zone_id}", response_model=PaybackResponse)
 def get_payback(zone_id: str, db: Session = Depends(get_db)):

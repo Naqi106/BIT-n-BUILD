@@ -79,6 +79,18 @@ cp .env.example .env
 # DATABASE_URL=...
 # GROQ_API_KEY=...
 
+# Real WhatsApp/SMS alerts (Twilio) — without these the alert notifier
+# runs the documented mock fallback instead of sending:
+# TWILIO_ACCOUNT_SID=AC...
+# TWILIO_AUTH_TOKEN=...
+# TWILIO_WHATSAPP_FROM=whatsapp:+14155238886     # sandbox or your sender
+# FIELD_STAFF_WHATSAPP_TO=whatsapp:+91XXXXXXXXXX  # must have joined the sandbox
+# TWILIO_CONTENT_SID=HC...                       # WhatsApp content template (optional,
+#   required outside a 24h session: Messaging → Content Builder, body with
+#   {{1}}..{{5}} = zone, severity, loss, method, confidence)
+# Join the sandbox from the receiving phone: send "join <code>" (shown on the
+# Twilio Console → Messaging → Try WhatsApp page) to the sandbox number.
+
 # Start the backend
 python -m uvicorn backend.app.main:app --reload
 ```
