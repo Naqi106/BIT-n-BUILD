@@ -36,7 +36,12 @@ export default function LeakLocationPage() {
     const [dispatch, setDispatch] = useState<api.PPAItem | null>(null)
     const [toast, setToast] = useState<string | null>(null)
 
-    const nodes = useAsync<api.PPAItem[]>(() => api.getPPA(zoneId), [zoneId])
+    // zoneId is '' until the store's zones arrive — skip the fetch then, or
+    // the first effect fires GET /audit/ppa/ which 404s.
+    const nodes = useAsync<api.PPAItem[]>(
+        () => (zoneId ? api.getPPA(zoneId) : Promise.resolve([])),
+        [zoneId],
+    )
 
     const setZone = (zid: string) => {
         const next = new URLSearchParams(params)

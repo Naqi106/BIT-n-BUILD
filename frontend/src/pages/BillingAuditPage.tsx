@@ -39,8 +39,10 @@ export default function BillingAuditPage() {
     const [exporting, setExporting] = useState(false)
 
     const zoneId = zoneParam || zones[0]?.id || ''
-    const audit = useAsync<api.PaginatedBilling>(
-        () => api.getBilling(zoneId, PAGE, offset),
+    // zoneId is '' until the store's zones arrive — skip the fetch then, or
+    // the first effect fires GET /audit/billing/?… which 404s.
+    const audit = useAsync<api.PaginatedBilling | null>(
+        () => (zoneId ? api.getBilling(zoneId, PAGE, offset) : Promise.resolve(null)),
         [zoneId, offset],
     )
 
