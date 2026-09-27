@@ -7,21 +7,28 @@ zones behind (create-if-missing fixtures without teardown), which then
 shows up on the Dashboard as unlabelled fake zones and fails the canary
 in test_demo_db_integrity.py.
 
-Two duties:
+Three duties, in order:
 
-1. Ordering -- run the demo-DB canary FIRST, before any test can write
-   to the DB, so it verifies the state a judge would see rather than
-   the state earlier fixtures happened to leave behind.
+1. Pre-run sweep (pytest_sessionstart) -- repair fixture zones leaked
+   by an EARLIER run (someone else's, or a killed one) before any test
+   executes, so the canary verifies the state a judge would see rather
+   than screaming about someone else's leftovers.
 
-2. Sweep -- after ANY run (any file, any author), delete the known
-   fixture zones (FORBIDDEN_ZONES from backend.data.cleanup_test_zones,
-   single source of truth) and their children, so a run always ends
-   with the clean 12-zone demo dataset. Results print in the terminal
-   summary.
+2. Ordering (pytest_collection_modifyitems) -- run the demo-DB canary
+   FIRST, before any test can write to the DB. Stable sort: everything
+   else keeps its original relative order.
 
-The sweep never fails the suite -- leaks are reported so the owning
-test file can add a teardown; the canary remains the alarm for
-pollution that already exists when the suite starts.
+3. Post-run sweep (pytest_sessionfinish) -- delete fixture zones this
+   run created (any file, any author), so the DB is clean for the next
+   person. Both sweeps print in the terminal summary; neither fails the
+   suite -- leaks are reported so the owning test file can add a
+   teardown.
+
+Deliberately NOT repaired automatically: missing/wiped demo zones or
+corrupted snapshot history. That is real damage with an unknown cause
+(see the canary's Sep 26 wipe incidents) and needs a human to run
+    python -m backend.data.lucknow_seed
+The canary stays red until they do -- that alarm is the point.
 """
 
 from backend.app.db import SessionLocal
@@ -29,7 +36,28 @@ from backend.data.cleanup_test_zones import sweep_forbidden_zones
 
 CANARY_FILE = "test_demo_db_integrity"
 
-_sweep_result = {}
+_pre_sweep = {}
+_post_sweep = {}
+
+
+def _sweep() -> dict:
+    """Run the shared fixture sweep; never raise."""
+    try:
+        db = SessionLocal()
+        try:
+            return sweep_forbidden_zones(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def pytest_sessionstart(session):
+    """Repair fixture pollution from earlier runs BEFORE the canary runs."""
+    if session.config.option.collectonly:
+        return
+    global _pre_sweep
+    _pre_sweep = _sweep()
 
 
 def pytest_collection_modifyitems(items):
@@ -42,28 +70,35 @@ def pytest_collection_modifyitems(items):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    global _sweep_result
+    """Leave the DB clean for whoever runs tests next."""
     if session.config.option.collectonly:
         return
-    try:
-        db = SessionLocal()
-        try:
-            _sweep_result = sweep_forbidden_zones(db)
-        finally:
-            db.close()
-    except Exception as exc:  # a broken sweep must never break the suite
-        _sweep_result = {"error": str(exc)}
+    global _post_sweep
+    _post_sweep = _sweep()
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    if _sweep_result.get("error"):
+    _report(
+        terminalreporter, "pre-run", _pre_sweep,
+        note="leaked by an earlier run -- swept before tests so the "
+             "canary sees a judge's view",
+    )
+    _report(
+        terminalreporter, "post-run", _post_sweep,
+        note="leaked during this run -- the test file that created "
+             "them should add a teardown",
+    )
+
+
+def _report(terminalreporter, label, result, note):
+    if not result:
+        return
+    if result.get("error"):
         terminalreporter.write_line(
-            f"[db-hygiene] fixture sweep FAILED: {_sweep_result['error']} "
+            f"[db-hygiene] {label} sweep FAILED: {result['error']} "
             f"(run manually: python -m backend.data.cleanup_test_zones)"
         )
-    elif _sweep_result:
+    else:
         terminalreporter.write_line(
-            f"[db-hygiene] swept leaked test fixtures from this run: "
-            f"{_sweep_result} -- the test file that created them should "
-            f"add a teardown"
+            f"[db-hygiene] {label} swept leaked test fixtures: {result} -- {note}"
         )
