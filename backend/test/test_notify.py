@@ -151,6 +151,7 @@ def _force_real_path(monkeypatch, content_sid=None):
     monkeypatch.setattr(notify, "TWILIO_WHATSAPP_FROM", "whatsapp:+10000000000")
     monkeypatch.setattr(notify, "FIELD_STAFF_WHATSAPP_TO", "whatsapp:+910000000000")
     monkeypatch.setattr(notify, "TWILIO_CONTENT_SID", content_sid)
+    monkeypatch.setattr(notify, "TWILIO_SMS_FROM", None)
     import twilio.rest
     monkeypatch.setattr(twilio.rest, "Client", _FakeClient)
 
@@ -179,4 +180,15 @@ def test_send_uses_plain_body_without_content_sid(monkeypatch):
     assert "content_sid" not in res
     kwargs = _FakeClient.last.messages.last_kwargs
     assert kwargs["body"] == "hello field team"
+    assert "content_sid" not in kwargs
+
+
+def test_send_sms_strips_whatsapp_prefix(monkeypatch):
+    _force_real_path(monkeypatch, content_sid=None)
+    res = notify.send_alert(alert_id=1, message="sms body", channel="sms")
+    assert res["status"] == "sent"
+    kwargs = _FakeClient.last.messages.last_kwargs
+    assert kwargs["from_"] == "+10000000000"
+    assert kwargs["to"] == "+910000000000"
+    assert kwargs["body"] == "sms body"
     assert "content_sid" not in kwargs

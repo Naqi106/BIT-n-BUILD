@@ -28,6 +28,7 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM")       # e.g. "whatsapp:+14155238886"
 FIELD_STAFF_WHATSAPP_TO = os.getenv("FIELD_STAFF_WHATSAPP_TO") # e.g. "whatsapp:+91XXXXXXXXXX"
 TWILIO_CONTENT_SID = os.getenv("TWILIO_CONTENT_SID")           # optional, e.g. "HCxxxxxxxx"
+TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM")                # optional, SMS-capable E.164 sender
 
 
 def _format_fields(alert: dict) -> dict:
@@ -105,10 +106,16 @@ def send_alert(alert_id: int, message: str, channel: str = "whatsapp", variables
         from twilio.rest import Client
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-        kwargs = {
-            "from_": TWILIO_WHATSAPP_FROM,
-            "to": FIELD_STAFF_WHATSAPP_TO,
-        }
+        kwargs = {}
+        if channel == "sms":
+            # SMS needs plain E.164 numbers on both ends — a whatsapp:-prefixed
+            # From would silently route the message as WhatsApp instead.
+            sms_from = TWILIO_SMS_FROM or TWILIO_WHATSAPP_FROM.split(":", 1)[-1]
+            kwargs["from_"] = sms_from
+            kwargs["to"] = FIELD_STAFF_WHATSAPP_TO.split(":", 1)[-1]
+        else:
+            kwargs["from_"] = TWILIO_WHATSAPP_FROM
+            kwargs["to"] = FIELD_STAFF_WHATSAPP_TO
         used_template = channel == "whatsapp" and bool(TWILIO_CONTENT_SID)
         if used_template:
             kwargs["content_sid"] = TWILIO_CONTENT_SID
