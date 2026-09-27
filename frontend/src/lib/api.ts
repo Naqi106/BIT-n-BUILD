@@ -288,6 +288,7 @@ export interface DetectResult {
     is_simulated?: boolean
     data_source?: string
     alert_id?: number
+    reused_existing?: boolean
 }
 
 export interface ActionCreatePayload {

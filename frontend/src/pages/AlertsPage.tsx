@@ -143,8 +143,9 @@ export default function AlertsPage() {
                     <span>{detecting ? 'Running…' : 'Run Detection'}</span>
                 </button>
                 <span className="text-[10px] text-stone-400">
-                    POST /detect · verdict computed from the zone's latest weekly snapshot · each
-                    positive run files a new alert
+                    POST /detect · verdict computed from the zone's latest weekly snapshot · a
+                    positive run files an alert; an already-ACTIVE zone reuses its open alert
+                    (resolve it to re-arm)
                 </span>
             </div>
 
@@ -522,7 +523,11 @@ function DetectVerdict({
                     <AlertTriangle className="w-3.5 h-3.5" />
                     <span>
                         Leak detected — {zoneName}
-                        {result.alert_id ? ` · ALT-${result.alert_id} filed` : ''}
+                        {result.alert_id
+                            ? result.reused_existing
+                                ? ` · ALT-${result.alert_id} already ACTIVE (reused)`
+                                : ` · ALT-${result.alert_id} filed`
+                            : ''}
                     </span>
                 </span>
                 <span className="flex items-center space-x-2">
@@ -541,6 +546,12 @@ function DetectVerdict({
                 ))}
             </div>
             <p className="text-rose-700 leading-relaxed">{result.details}</p>
+            {result.reused_existing && (
+                <p className="text-rose-700 font-medium">
+                    This zone already has an open alert — reused ALT-{result.alert_id} instead
+                    of filing a duplicate row. Resolve it to re-arm detection.
+                </p>
+            )}
             <div className="flex flex-wrap items-center gap-2 text-[10px] text-stone-500">
                 <Pill className="bg-stone-200 text-stone-700">{result.detection_methods}</Pill>
                 <span>

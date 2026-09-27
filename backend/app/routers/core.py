@@ -106,18 +106,33 @@ def trigger_detection(zone_id: str, db: Session = Depends(get_db)):
         result["details"] = f"[DEFAULT FALLBACK DATA - NOT REAL TELEMETRY] {result['details']}"
 
     if result["is_leak_detected"]:
-        alert = LeakAlert(
-            zone_id=zone_id,
-            severity=result["severity"],
-            estimated_loss_litres=result["estimated_loss_litres"],
-            confidence_score=result["confidence_score"],
-            detection_methods=result["detection_methods"],
-            status="ACTIVE",
-            details=result["details"]
+        # De-duplication: if this zone already has an open alert (seeded, or
+        # filed by an earlier Run Detection click), reuse it instead of
+        # stacking an identical twin on every click. Resolving the alert
+        # re-arms detection and the next positive run files a fresh row.
+        existing = (
+            db.query(LeakAlert)
+            .filter(LeakAlert.zone_id == zone_id, LeakAlert.status == "ACTIVE")
+            .order_by(LeakAlert.id.asc())
+            .first()
         )
-        db.add(alert)
-        db.commit()
-        result["alert_id"] = alert.id
+        if existing is not None:
+            result["alert_id"] = existing.id
+            result["reused_existing"] = True
+        else:
+            alert = LeakAlert(
+                zone_id=zone_id,
+                severity=result["severity"],
+                estimated_loss_litres=result["estimated_loss_litres"],
+                confidence_score=result["confidence_score"],
+                detection_methods=result["detection_methods"],
+                status="ACTIVE",
+                details=result["details"]
+            )
+            db.add(alert)
+            db.commit()
+            result["alert_id"] = alert.id
+            result["reused_existing"] = False
 
     return result
 
