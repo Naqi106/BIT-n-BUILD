@@ -10,14 +10,22 @@ meant to catch:
   - something repeatedly ran `DELETE FROM zones` (children intact), wiping all
     12 demo zones three times in one evening
 
-These tests are read-only. If one fails, the demo dataset needs reseeding:
+These tests are read-only. Via conftest.py they run FIRST in every
+session -- before any test can write -- so they describe the state a
+judge would see; conftest.py also sweeps leaked fixture zones after
+every run (reported in the terminal summary).
+
+If one fails, the demo dataset needs reseeding:
     python -m backend.data.lucknow_seed
+For leaked fixture zones specifically:
+    python -m backend.data.cleanup_test_zones
 """
 
 import pytest
 from sqlalchemy import func
 
 from backend.app.db import SessionLocal
+from backend.data.cleanup_test_zones import FORBIDDEN_ZONES
 from backend.data.db_schema import (
     Zone, RawReading, BillingRecord, NRWSnapshot,
     InvestigationMemory, LeakAlert,
@@ -28,9 +36,6 @@ DEMO_ZONES = {f"zone_{i}" for i in range(1, 13)}
 # Non-demo zones that are ALLOWED to exist deliberately:
 #   ZONE-DEMO-01 -- Person 3's agent demo seed (backend/data/seed_agent_demo.py)
 ALLOWED_EXTRA_ZONES = {"ZONE-DEMO-01"}
-
-# Leftover fixture zones that must never appear in the demo DB.
-FORBIDDEN_ZONES = {"ZONE-TEST", "ZONE-AGENT-TEST", "ZONE-NO-MEM"}
 
 
 @pytest.fixture()
@@ -55,7 +60,8 @@ def test_all_12_demo_zones_present(db):
     extras = ids - DEMO_ZONES
     assert extras <= ALLOWED_EXTRA_ZONES, (
         f"Unknown zones on the shared demo DB: {sorted(extras - ALLOWED_EXTRA_ZONES)}. "
-        f"Test fixtures must not leak here (tear them down, or allowlist them)."
+        f"Test fixtures must not leak here (tear them down, or run: "
+        f"python -m backend.data.cleanup_test_zones)"
     )
 
 
@@ -63,7 +69,8 @@ def test_no_forbidden_test_zones(db):
     ids = _zone_ids(db)
     leaked = ids & FORBIDDEN_ZONES
     assert not leaked, (
-        f"Test fixture zones leaked into the demo DB: {sorted(leaked)}."
+        f"Test fixture zones leaked into the demo DB: {sorted(leaked)}. "
+        f"Run: python -m backend.data.cleanup_test_zones"
     )
 
 

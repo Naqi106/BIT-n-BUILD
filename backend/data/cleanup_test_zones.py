@@ -55,6 +55,35 @@ CHILD_MODELS = [
 ]
 
 
+def sweep_forbidden_zones(db) -> dict:
+    """
+    Delete FORBIDDEN_ZONES and their child rows, then commit.
+
+    Returns {table_name: row_count}; an empty dict means the DB was
+    already clean. Shared by __main__ (manual repair) and
+    backend/test/conftest.py, which runs it automatically after every
+    pytest session so a test run always ends with the clean 12-zone
+    demo dataset -- whatever any test file leaked.
+    """
+    if not db.query(Zone).filter(Zone.id.in_(FORBIDDEN_ZONES)).count():
+        return {}
+
+    removed = {}
+    for model in CHILD_MODELS:
+        n = db.query(model).filter(
+            model.zone_id.in_(FORBIDDEN_ZONES)
+        ).delete(synchronize_session=False)
+        if n:
+            removed[model.__tablename__] = n
+    n = db.query(Zone).filter(Zone.id.in_(FORBIDDEN_ZONES)).delete(
+        synchronize_session=False
+    )
+    if n:
+        removed["zones"] = n
+    db.commit()
+    return removed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry", action="store_true", help="report only, delete nothing")
@@ -81,20 +110,7 @@ def main() -> int:
             print("\n(dry run -- nothing deleted)")
             return 0
 
-        removed = {}
-        for model in CHILD_MODELS:
-            n = db.query(model).filter(
-                model.zone_id.in_(FORBIDDEN_ZONES)
-            ).delete(synchronize_session=False)
-            if n:
-                removed[model.__tablename__] = n
-        n = db.query(Zone).filter(Zone.id.in_(FORBIDDEN_ZONES)).delete(
-            synchronize_session=False
-        )
-        if n:
-            removed["zones"] = n
-        db.commit()
-
+        removed = sweep_forbidden_zones(db)
         print(f"Removed: {removed}")
         print(f"Demo zones remaining: {db.query(Zone).count()} (expect 12)")
         return 0
