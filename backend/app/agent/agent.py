@@ -317,22 +317,40 @@ CRITICAL ACCURACY CONSTRAINTS:
     while round_count < MAX_TOOL_ROUNDS:
         round_count += 1
         tool_choice = "required" if round_count == 1 else "auto"
-        try:
-            response = await client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                tools=TOOLS_SCHEMA,
-                tool_choice=tool_choice,
-                temperature=0.1,
-                max_completion_tokens=2048,
-                reasoning_effort="low",
-            )
-        except Exception as e:
-            logger.error("LLM call failed on round %d: %s", round_count, str(e))
-            return build_fallback_investigation(
-                zone_id=zone_id,
-                summary=f"AI service temporarily unavailable: {str(e)[:150]}",
-            )
+        response = None
+        for create_attempt in range(3):
+            try:
+                response = await client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=messages,
+                    tools=TOOLS_SCHEMA,
+                    tool_choice=tool_choice,
+                    temperature=0.1,
+                    max_completion_tokens=2048,
+                    reasoning_effort="low",
+                )
+                break
+            except Exception as e:
+                # gpt-oss-20b intermittently emits malformed tool calls (a
+                # leaked "<|channel|>commentary" suffix in the tool name, or
+                # the final answer delivered as a tool named "JSON"); Groq
+                # rejects those with a 400 'tool_use_failed' -- observed on
+                # ~1 in 5 live runs. The generation is nondeterministic, so
+                # up to 2 retries of the SAME request almost always heal it.
+                # Every other error keeps the original immediate fallback.
+                if create_attempt < 2 and "tool_use_failed" in str(e):
+                    logger.warning(
+                        "Malformed tool call rejected on round %d; retrying (%d left): %s",
+                        round_count,
+                        2 - create_attempt,
+                        str(e)[:200],
+                    )
+                    continue
+                logger.error("LLM call failed on round %d: %s", round_count, str(e))
+                return build_fallback_investigation(
+                    zone_id=zone_id,
+                    summary=f"AI service temporarily unavailable: {str(e)[:150]}",
+                )
 
         choice = response.choices[0]
         message = choice.message

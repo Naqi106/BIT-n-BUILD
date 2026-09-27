@@ -71,6 +71,13 @@ async def run_investigation(
             action_taken_text = "; ".join(
                 f"[{r.priority}] {r.action}" for r in result.recommendations
             ) or None
+            # investigation_memory.action_taken is varchar(255); this join is
+            # unbounded, so a detailed 3-recommendation investigation used to
+            # overflow the column, raise, and be swallowed by the except
+            # below -- silently losing the memory row (zone_6's live runs
+            # hit exactly this). Bound it at the root instead.
+            if action_taken_text and len(action_taken_text) > 255:
+                action_taken_text = action_taken_text[:255]
 
             mem_id = save_investigation_memory(
                 db=db,

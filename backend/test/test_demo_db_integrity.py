@@ -130,6 +130,29 @@ def test_leak_alerts_scoped_to_known_zones(db):
     assert not unknown, f"Leak alerts on unknown zones: {sorted(unknown)}"
 
 
+def test_agent_balance_citations_match_seeded_zone_data(db):
+    """The Copilot's water-balance citations must agree with the numbers
+    every other screen shows (roadmap final sweep: no page may contradict
+    the demo dataset). Guards the snapshot-first fix in agent/tools.py --
+    if anyone reverts to inflow-vs-billing-sample math, this fails."""
+    from backend.app.agent.tools import run_water_balance, TOWN_ANCHOR_NRW
+
+    assert TOWN_ANCHOR_NRW == 55.0   # same anchor as GET /data/town-profile
+
+    worst = run_water_balance("zone_6", db=db)
+    assert worst["status"] == "SUCCESS"
+    assert worst["data_source"] == "WEEKLY_SNAPSHOT"
+    assert worst["nrw_percentage"] == pytest.approx(70.6, abs=0.1)
+    assert worst["severity"] == "CRITICAL"
+    assert worst["is_leak_detected"] is True
+
+    clean = run_water_balance("zone_8", db=db)
+    assert clean["status"] == "SUCCESS"
+    assert clean["nrw_percentage"] == pytest.approx(43.5, abs=0.1)
+    assert clean["severity"] == "LOW"
+    assert clean["is_leak_detected"] is False
+
+
 def test_town_weighted_nrw_still_in_lucknow_range(db):
     """
     Latest snapshot per demo zone, inflow-weighted NRW must sit near the

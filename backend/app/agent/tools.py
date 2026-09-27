@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from backend.app.db import SessionLocal
-from backend.data.db_schema import Zone, RawReading, BillingRecord
+from backend.data.db_schema import Zone, RawReading, BillingRecord, NRWSnapshot
 from backend.app.engines.latias import (
     water_balance_loss,
     mnf_loss_estimate,
@@ -28,13 +28,45 @@ from backend.app.engines.ml_billing_anomaly import FLAG_THRESHOLD, get_detector
 from backend.app.routers.audit import get_ppa_leak_location
 
 
+# Town anchor from the AMRUT/Jal Shakti data -- GET /data/town-profile
+# reports the same 55%. Severity is measured RELATIVE to it so a zone
+# sitting at the city baseline reads LOW instead of CRITICAL (in an
+# absolute-terms sense every zone in a 55%-NRW city is "high", but only
+# zones ABOVE the baseline are the alarming ones).
+TOWN_ANCHOR_NRW = 55.0
+
+
+def _balance_severity(nrw_pct: float) -> str:
+    """Classify a zone's NRW against the town anchor (percentage points)."""
+    delta = nrw_pct - TOWN_ANCHOR_NRW
+    if delta >= 12.0:
+        return "CRITICAL"
+    if delta >= 6.0:
+        return "HIGH"
+    if delta >= 2.0:
+        return "MEDIUM"
+    return "LOW"
+
+
 def run_water_balance(
     zone_id: str,
     db: Optional[Session] = None
 ) -> Dict[str, Any]:
     """
-    Computes component-based water balance for a zone using latest telemetry and billing data.
-    Wraps water_balance_loss() from backend.app.engines.latias.
+    Computes the zone's water balance.
+
+    Primary source: the latest weekly NRWSnapshot -- the same rows the
+    Dashboard, the trend engine and the seed verification use, so the
+    agent's citations always agree with the rest of the product.
+
+    Fallback (zones without snapshot history, e.g. fresh CSV uploads):
+    latest telemetry inflow vs the zone's billing records, honestly
+    labelled data_source=TELEMETRY. NOTE: billing records are an
+    anomaly-detection SAMPLE of households (~33 per zone), so that path
+    massively overstates NRW -- snapshot-backed demo zones never use it.
+
+    Severity and is_leak_detected are measured against
+    TOWN_ANCHOR_NRW (city baseline 55%), not absolute percentages.
     """
     managed_session = False
     if db is None:
@@ -58,47 +90,56 @@ def run_water_balance(
                 "status": "NO_DATA",
             }
 
-        latest_reading = (
-            db.query(RawReading)
-            .filter(RawReading.zone_id == zone_id)
-            .order_by(RawReading.timestamp.desc())
+        snapshot = (
+            db.query(NRWSnapshot)
+            .filter(NRWSnapshot.zone_id == zone_id)
+            .order_by(NRWSnapshot.timestamp.desc())
             .first()
         )
 
-        if not latest_reading or latest_reading.inflow_litres is None:
-            return {
-                "zone_id": zone_id,
-                "inflow_litres": 0.0,
-                "billed_litres": 0.0,
-                "loss_litres": 0.0,
-                "nrw_percentage": 0.0,
-                "severity": "LOW",
-                "is_leak_detected": False,
-                "data_source": "NO_DATA",
-                "status": "NO_DATA",
-            }
-
-        inflow = float(latest_reading.inflow_litres)
-        billed_sum = (
-            db.query(func.sum(BillingRecord.billed_litres))
-            .filter(BillingRecord.zone_id == zone_id)
-            .scalar()
-        )
-        billed_litres = float(billed_sum) if billed_sum is not None else 0.0
-
-        loss = water_balance_loss(inflow, billed_litres)
-        nrw_pct = round((loss / inflow * 100.0), 2) if inflow > 0 else 0.0
-
-        if nrw_pct >= 50.0:
-            severity = "CRITICAL"
-        elif nrw_pct >= 35.0:
-            severity = "HIGH"
-        elif nrw_pct >= 20.0:
-            severity = "MEDIUM"
+        if snapshot is not None and float(snapshot.inflow_litres or 0.0) > 0:
+            # Snapshot-backed path: coherent with every other screen.
+            inflow = float(snapshot.inflow_litres)
+            billed_litres = float(snapshot.billed_litres)
+            loss = float(snapshot.loss_litres)
+            nrw_pct = round(float(snapshot.nrw_percentage), 2)
+            data_source = "WEEKLY_SNAPSHOT"
         else:
-            severity = "LOW"
+            # Legacy telemetry path (zones with no snapshot history).
+            latest_reading = (
+                db.query(RawReading)
+                .filter(RawReading.zone_id == zone_id)
+                .order_by(RawReading.timestamp.desc())
+                .first()
+            )
 
-        is_leak = loss > 0.0
+            if not latest_reading or latest_reading.inflow_litres is None:
+                return {
+                    "zone_id": zone_id,
+                    "inflow_litres": 0.0,
+                    "billed_litres": 0.0,
+                    "loss_litres": 0.0,
+                    "nrw_percentage": 0.0,
+                    "severity": "LOW",
+                    "is_leak_detected": False,
+                    "data_source": "NO_DATA",
+                    "status": "NO_DATA",
+                }
+
+            inflow = float(latest_reading.inflow_litres)
+            billed_sum = (
+                db.query(func.sum(BillingRecord.billed_litres))
+                .filter(BillingRecord.zone_id == zone_id)
+                .scalar()
+            )
+            billed_litres = float(billed_sum) if billed_sum is not None else 0.0
+
+            loss = water_balance_loss(inflow, billed_litres)
+            nrw_pct = round((loss / inflow * 100.0), 2) if inflow > 0 else 0.0
+            data_source = "TELEMETRY"
+
+        severity = _balance_severity(nrw_pct)
+        is_leak = nrw_pct > TOWN_ANCHOR_NRW
 
         return {
             "zone_id": zone_id,
@@ -108,7 +149,7 @@ def run_water_balance(
             "nrw_percentage": nrw_pct,
             "severity": severity,
             "is_leak_detected": is_leak,
-            "data_source": "TELEMETRY",
+            "data_source": data_source,
             "status": "SUCCESS",
         }
     except Exception as e:
