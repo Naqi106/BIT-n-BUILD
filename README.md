@@ -85,11 +85,21 @@ cp .env.example .env
 # TWILIO_AUTH_TOKEN=...
 # TWILIO_WHATSAPP_FROM=whatsapp:+14155238886     # sandbox or your sender
 # FIELD_STAFF_WHATSAPP_TO=whatsapp:+91XXXXXXXXXX  # must have joined the sandbox
-# TWILIO_CONTENT_SID=HC...                       # WhatsApp content template (optional,
-#   required outside a 24h session: Messaging → Content Builder, body with
-#   {{1}}..{{5}} = zone, severity, loss, method, confidence)
-# Join the sandbox from the receiving phone: send "join <code>" (shown on the
-# Twilio Console → Messaging → Try WhatsApp page) to the sandbox number.
+# TWILIO_CONTENT_SID=HC...                       # WhatsApp content template, body with
+#   {{1}}..{{5}} = zone, severity, loss, method, confidence
+#
+# TRIAL-ACCOUNT RULE (verified against the API 2026-09): on a Twilio trial
+# account EVERY WhatsApp API send requires a Twilio-provided ContentSid — even
+# inside the 24-hour sandbox service window (free-form returns
+# "ContentSid Required"). The Content API is blocked on trial (error 20003
+# "not available on a Trial account"), so custom templates need an account
+# upgrade first. The provided templates' ContentSids appear in the cURL code
+# block on Console → Messaging → Try out WhatsApp. After an upgrade, either
+# drop ContentSid for free-form-in-window sends, or create a custom template
+# in Messaging → Content Builder with the body above.
+# Sandbox (works on trial): from the receiving phone send "join <code>" to
+# +14155238886 (code shown on Console/Try-out page; membership lasts 72h;
+# sending the join opens a 24h customer-service window).
 
 # Start the backend
 python -m uvicorn backend.app.main:app --reload
