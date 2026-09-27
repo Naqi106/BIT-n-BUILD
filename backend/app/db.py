@@ -17,7 +17,13 @@ connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite")
 engine = create_engine(
     DATABASE_URL,
     connect_args=connect_args,
-    echo=False
+    echo=False,
+    # The shared Supabase pooler closes idle connections mid-session; a stale
+    # pooled connection then surfaces as a 500 on the next request. pre_ping
+    # validates the connection at checkout and transparently replaces dead
+    # ones; recycle keeps connections from ageing past the pooler's limits.
+    pool_pre_ping=True,
+    pool_recycle=3600,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
