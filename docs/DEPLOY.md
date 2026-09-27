@@ -77,9 +77,9 @@ local SQLite (`db.py` default) — fix the env var and restart.
 4. Optional: hit Render `/health` once to warm it (see cold starts below).
 
 > **Shared-DB rule:** the deployed app mutates the *same* Supabase database as
-> localhost. The pristine-state discipline in [`DEMO_VIDEO.md`](../DEMO_VIDEO.md)
-> applies to live clicks on the deployed site too — after any detect/dispatch
-> rehearsal, run the FK-safe cleanup one-liner from that file before judges touch it.
+> localhost. The pristine-state discipline in your local `DEMO_VIDEO.md` runbook
+> (kept out of the repo) applies to live clicks on the deployed site too — after
+> any detect/dispatch rehearsal, run its FK-safe cleanup one-liner before judges touch it.
 
 ---
 

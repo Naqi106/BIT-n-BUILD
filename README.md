@@ -60,8 +60,7 @@ frontend/            # Vite + React + TypeScript SPA (all screens, live API data
     lib/             # typed API client, formatters, derivations
   smoke/             # jsdom render smoke (mounts every route live)
 docs/
-  roadmap.pdf       # the 24-hour rebuild roadmap this build follows
-DEPRECATIONS.md     # prototype shortcuts that were retired, and what replaced them
+  DEPLOY.md         # Render + Vercel deployment guide
 ```
 
 ### Backend
@@ -136,7 +135,8 @@ data as `localhost`. One-time setup takes ~15 minutes:
 - Render free tier sleeps after ~15 min idle: the first API call then takes
   ~40–60 s (open `/health` once to wake it before a demo).
 - The deployed app mutates the **same demo database** as localhost — the
-  pristine-state rules in [DEMO_VIDEO.md](DEMO_VIDEO.md) apply to live clicks too.
+  pristine-state rules in your local `DEMO_VIDEO.md` runbook (kept out of the
+  repo) apply to live clicks too.
 
 ## Honest Limitations
 
